@@ -1,0 +1,3415 @@
+# AI Agent 深度解析：从架构原理到工程实践
+
+> **分享日期**：2026年3月26日
+>
+> **分享人**：2026年3月26日
+> **关键词**：Agent Loop、工具系统、上下文管理、多Agent协作、最佳实践
+
+---
+
+## 开篇：为什么现在需要深入理解 Agent
+
+2025-2026年，AI Agent 从概念验证走向生产落地。Claude Code、OpenAI Codex、Cursor Background Agent——这些产品的成功证明了一件事：**Agent 不是一个模型问题，而是一个系统工程问题**。
+
+本次分享不讲"什么是Agent"的入门内容，而是聚焦以下核心问题：
+
+1. **架构选择**：单Agent vs 多Agent，事件溯源 vs 扁平历史，各有什么取舍？（→ 详见 §1.2-1.4）
+   → Claude Code 证明单 Agent + 子 Agent 委派模式在大多数场景优于复杂多 Agent 编排，因为单线程循环带来了可调试性、可靠性和推理透明度三大关键质量属性，而多 Agent 系统的协调开销和调试难度往往抵消其理论优势。
+2. **深入 Claude Code**：Anthropic 如何用"激进的简洁"击败复杂的多Agent系统？（→ 详见 §2.1-2.9）
+   → 核心在于"Do the Simple Thing First"哲学——单线程主循环而非多 Agent 群体、扁平消息历史而非复杂线程、正则搜索优先于向量嵌入、Markdown 文件优先于数据库。配合自动 Context Compaction 和动态系统提示词组装，用最少的架构复杂度实现了最高的工程可靠性。此外，Agent Teams 基于文件系统的去中心化协作机制展示了多 Agent 协作的另一种可能。
+3. **SDK 实践**：Claude Agent SDK 的核心抽象和实战用法（→ 详见 §3.1-3.11）
+   → SDK 提供了完整的 Agent 运行时，核心抽象包括 Agent、Tool、Session 和 Hooks 四大模块，支持 Subagent 父子委派编排模式，并通过 MCP 协议实现工具生态的开放集成。
+4. **行业全景**：Codex、OpenAI Agents SDK、OpenHands、OpenClaw、浏览器自动化技术栈的深度架构分析与横向对比（→ 详见 §4.1-4.9）
+   → 各家走出了差异化路线——Codex 强调系统工程和多端协议、OpenAI Agents SDK 以 Handoff 机制实现轻量多 Agent 路由、OpenHands 用事件溯源实现确定性重放、Google 押注 A2A+ADK 开放互操作——没有"最佳"框架，只有最适合特定场景的取舍。
+5. **工程经验**：工具设计、错误处理、人机协作——来自一线的最佳实践（→ 详见 §5.1-5.6）
+   → Anthropic 的核心方法论是"简单、可组合的模式优于复杂框架"。在工具优化上花的精力应超过 prompt 优化，遵循 ACI（Agent-Computer Interface）原则；错误处理采用分层与优雅降级策略；人机协作不是可选项而是安全底线。
+
+**大纲速览**：
+
+第一部分：Agent 基础认知升级 ─── 架构模式、核心挑战、设计取舍
+第二部分：深入 Claude Code ────── 设计哲学、Agent Loop、工具系统、上下文管理、Agent Teams
+第三部分：Claude Agent SDK ────── 核心API、架构详解、MCP集成、Subagent编排
+第四部分：行业 Agent 全景 ────── Codex、OpenAI Agents SDK、Google Agent生态、OpenHands、OpenClaw、浏览器自动化、横向对比与选型
+第五部分：Agent 最佳实践 ────── 工具设计、错误处理、人机协作、评估测试
+总结与展望 ─────────────────── 关键 Takeaway、趋势判断、实践建议
+
+**推荐阅读路径**（全文约 3 万字，建议按需选读）：
+
+- **时间有限**（30 分钟）：§2.3 Agent Loop → §5.1-5.3 最佳实践 → 总结与展望
+- **架构师视角**：第一部分（全）→ §2.1-2.3 → 第四部分 §4.7-4.9 横向对比与选型
+- **开发者视角**：第二部分（全）→ 第三部分（全）→ §5.2 工具设计
+- **行业调研**：第四部分（全）→ 总结与展望
+
+---
+
+## 第一部分：Agent 基础认知升级
+
+> 本部分基于 Agent 基础研究材料，覆盖 Agent 的定义与演进、核心组件、架构模式、以及生产落地面临的核心挑战与设计取舍。
+
+### 1.1 什么是 AI Agent：定义与演进
+
+**AI Agent（智能体）** 是一个以大语言模型（LLM）为推理核心，具备**自主感知环境、制定计划、调用工具、迭代执行**能力的软件系统。与传统 LLM 应用（单次问答、简单 Chain）不同，Agent 的核心特征是**自主循环**——它能根据中间结果动态调整策略，而非沿着预定义的代码路径执行。
+
+**核心公式**：
+
+```
+Agent = LLM（推理引擎）+ Tools（执行能力）+ Memory（状态管理）+ Planning（规划模块）
+```
+
+Anthropic 在 2024 年 12 月发布的 [Building Effective Agents](https://www.anthropic.com/research/building-effective-agents) 技术博客中，给出了一个被广泛接受的定义区分：
+
+|                    | Workflow（工作流）                   | Agent（智能体）                         |
+| ------------------ | ------------------------------------ | --------------------------------------- |
+| **编排方式** | LLM 通过**预定义代码路径**编排 | LLM**动态指导**自身流程和工具使用 |
+| **可预测性** | 高，流程固定                         | 低，具有不确定性                        |
+| **适用场景** | 结构清晰、步骤可提前确定             | 开放性任务、步骤不可预测                |
+| **成本**     | 较低                                 | 较高（更多LLM调用 + 复合错误风险）      |
+
+这个区分的工程含义深远——大部分工程工作不在模型推理，而在运行环境（Harness）的设计上。OpenAI 在 Codex 发布后也坦言："最难解决的问题几乎与AI模型本身无关。真正的工程工作投入到模型周围的一切。"
+
+Anthropic 还总结了五种核心 Workflow 模式（提示词链接、路由、并行化、编排-工作者、评估-优化器），构成从简单到复杂的完整谱系。其核心建议是：**"从简单开始，按需增加复杂度"**——绝大多数场景下，简单的 LLM 调用加上好的 Prompt 就够了，只在 Workflow 模式确实不够时才升级到自主 Agent。
+
+**从 Chatbot 到 Agent 的演进路径**：
+
+```text
+2022          2023            2024              2025-2026
+  │             │               │                 │
+  ▼             ▼               ▼                 ▼
+Prompt Eng.   工具调用+循环    工程化与可靠性     协议化与产品化
+ CoT 论文     AutoGPT/BabyAGI  Function Calling   MCP/A2A 协议
+              Voyager          Building Agents    Claude Code/Codex
+                               Plan-and-Execute   AAIF (Linux Foundation)
+```
+
+AI Agent 的演进经历了四个阶段：
+
+**第一阶段：Prompt Engineering（2022-2023初）** —— Chain-of-Thought（[Wei et al., 2022, NeurIPS 2022](https://arxiv.org/abs/2201.11903)）证明了让 LLM "一步步思考"能大幅提升推理能力，为 Agent 的规划能力奠定了基础。
+
+**第二阶段：工具调用 + 简单循环（2023）** —— [AutoGPT](https://github.com/Significant-Gravitas/AutoGPT)（2023年3月）首次展示了 LLM 自主循环调用工具的可能性，虽然实用性有限但引爆了 Agent 概念；[BabyAGI](https://github.com/yoheinakajima/babyagi)（2023年3月）提出任务分解与优先级管理；[Voyager](https://voyager.minedojo.org/)（2023年5月，[arXiv:2305.16291](https://arxiv.org/abs/2305.16291)）展示了 LLM Agent 在 Minecraft 开放世界中的自主探索能力。
+
+**第三阶段：工程化与可靠性（2024）** —— 社区从"demo 驱动"转向"生产驱动"。Function Calling / Tool Use API 成为所有主流 LLM 的标准能力；从简单的 ReAct 循环演进到 Plan-and-Execute、状态图（StateGraph）等更可控的架构；Anthropic [Building Effective Agents](https://www.anthropic.com/research/building-effective-agents) 博文提出"先用最简单的方案"的设计原则；企业级关注点转向可靠性、可观测性、安全性和成本控制。
+
+**第四阶段：协议化与产品化（2025-2026）** —— [MCP 协议](https://modelcontextprotocol.io)（Anthropic，2024年11月发布，2025年爆发）成为工具互操作的事实标准；[A2A 协议](https://google.github.io/A2A)（Google，2025年4月）解决 Agent 间通信标准化；Claude Code、OpenAI Codex、Cursor Agent Mode 等产品级 Coding Agent 普及；Linux Foundation 成立 [Agentic AI Foundation（AAIF）](https://www.linuxfoundation.org/press/linux-foundation-announces-the-formation-of-the-agentic-ai-foundation)（2025年12月），MCP 和 A2A 成为基金会级开放标准。
+
+**Agent 与相关概念的区分**：
+
+| 概念                         | 特征                         | 典型例子                  |
+| ---------------------------- | ---------------------------- | ------------------------- |
+| **Chatbot**            | 单轮/多轮对话，无工具调用    | ChatGPT 基础对话          |
+| **RAG Pipeline**       | 检索增强生成，固定流程       | 企业知识库问答            |
+| **Workflow / Chain**   | 预定义的多步 LLM 调用流程    | Prompt Chaining           |
+| **Agent**              | 自主循环，动态规划，工具调用 | Claude Code、Devin        |
+| **Multi-Agent System** | 多个 Agent 协作完成复杂任务  | CrewAI 团队、AutoGen 对话 |
+
+### 1.2 Agent 核心组件概览
+
+> 本节概述 Agent 四大组件的通用概念框架。每个组件在 Claude Code 和各 SDK 中的具体实现细节将在第二、三部分展开。
+
+一个完整的 Agent 系统由四个核心组件构成，每个都有独特的工程挑战。
+
+**LLM 推理引擎（Reasoning Engine）** —— LLM 是 Agent 的"大脑"，负责理解任务、制定策略、选择工具、解读结果。关键能力包括：指令遵循（Instruction Following）、工具调用（Tool Use / Function Calling）、长上下文处理（Agent 循环中累积的上下文可能达到数十万 token）、多步推理和自我纠错。
+
+模型选择是核心工程决策：
+
+```
+任务复杂度高 + 需要强推理  → 各家旗舰推理模型（如 Claude Opus 4.6、GPT-4.1、Gemini 2.5 Pro）
+任务中等 + 成本敏感       → 中端平衡模型（如 Claude Sonnet、GPT-4.1-mini、Gemini 2.5 Flash）
+简单分类 / 路由           → 轻量快速模型（如 Claude Haiku、GPT-4.1-nano）
+```
+
+Anthropic 发现，**选择更强的模型往往比添加复杂的架构更有效**。"先用最好的模型 + 最简单的架构，不行再加复杂度"是被广泛验证的最佳实践。
+
+**工具系统（Tool System）** —— 工具是 Agent 与外部世界交互的接口，赋予 LLM "行动"的能力。工具设计的关键原则：
+
+1. **描述即提示（Description as Prompt）**：工具的 description 是 LLM 决定是否使用该工具的关键依据
+2. **原子性（Atomicity）**：每个工具做一件明确的事，避免副作用
+3. **错误反馈**：工具执行失败时返回有意义的错误信息，帮助 Agent 自我纠错
+4. **幂等性**：相同输入产生相同输出，减少不确定性
+5. **最小权限**：只暴露必要的工具，减少 Agent 误操作的空间
+
+Anthropic 的一个关键洞察：**在工具优化上花的精力应该超过 prompt 优化**。
+
+**记忆机制（Memory System）** —— Agent 需要在执行过程中维护上下文状态，记忆分为三个层次：
+
+```
+短期记忆（Context Window）   → 对话历史 + 工具结果，生命周期：单次 LLM 调用
+中期记忆（Session State）    → 暂存区 + 状态图 + 检查点，生命周期：单个任务
+长期记忆（Persistent Memory）→ 向量DB + CLAUDE.md + 用户画像，生命周期：跨会话
+```
+
+核心挑战是**上下文窗口溢出**——Agent 执行数十次工具调用后，上下文可能超过窗口限制。应对策略包括：上下文压缩（Context Compaction，Claude Code 的做法——接近窗口限制时用 LLM 生成压缩摘要）、滑动窗口（只保留最近 N 轮交互）、选择性保留（保留系统提示 + 最近交互 + 关键中间结果）。**CLAUDE.md / AGENTS.md 模式**——将项目知识以 Markdown 文件形式持久化，每次会话自动加载——是当前最简单有效的长期记忆方案之一。
+
+**规划模块（Planning Module）** —— 规划是 Agent 区别于简单 LLM 应用的核心能力。规划策略的演进如下：
+
+| 策略                                    | 核心思想                       | 优点             | 缺点           |
+| --------------------------------------- | ------------------------------ | ---------------- | -------------- |
+| **无显式规划（ReAct）**           | 每步即时推理                   | 灵活、适应性强   | 缺乏全局视角   |
+| **前置规划（Plan-then-Execute）** | 先制定完整计划再执行           | 全局最优、可预测 | 不适应意外情况 |
+| **自适应规划**                    | 规划 + 动态修正                | 平衡全局与灵活   | 实现复杂       |
+| **层次规划（HTP）**               | 高层目标 → 子目标 → 原子动作 | 处理复杂任务     | 层次设计困难   |
+| **树搜索规划（LATS）**            | 搜索 + 回溯 + 反思             | 探索更优路径     | 计算开销大     |
+
+### 1.3 核心架构模式
+
+当确实需要构建自主 Agent 时，有几种经过验证的架构模式，从简单到复杂排列。
+
+**ReAct（Reasoning + Acting）** —— 最基础也最广泛使用的 Agent 架构模式。
+
+核心思想是让 LLM 在思考（Thought）和行动（Action）之间交替进行（[Yao et al., 2022, ICLR 2023](https://arxiv.org/abs/2210.03629)）：
+
+```
+Thought: 需要查看 auth.py 中的 bug → Action: read_file("auth.py") → Observation: [文件内容]
+Thought: 第42行逻辑有误，> 应为 >= → Action: edit_file(line=42, ...) → Observation: 已修改
+Thought: 运行测试验证 → Action: bash("pytest test_auth.py") → Observation: 全部通过 ✓
+→ Final Answer: 已修复 token 过期检查逻辑
+```
+
+ReAct 在知识密集型任务中显著优于纯推理（Chain-of-Thought），在决策任务中显著优于纯行动（Action-only）。优势是实现简单、每步可解释、灵活性高、模型自主决定何时停止；局限是缺乏全局规划、长任务中容易"迷失方向"、每步都需要 LLM 推理导致延迟和成本累积、没有回溯机制。Claude Code 和大多数 Coding Agent 的核心循环本质上就是 ReAct。
+
+**Plan-and-Execute** —— 将高层规划与低层执行分离，适用于步骤较多的复杂任务。
+
+先用 Planner LLM 制定完整计划，再用 Executor 逐步执行，计划可动态修正。与 ReAct 的关键区别：
+
+| 维度     | ReAct              | Plan-and-Execute                      |
+| -------- | ------------------ | ------------------------------------- |
+| 规划时机 | 每步即时规划       | 预先制定全局计划                      |
+| 全局视角 | 弱                 | 强                                    |
+| 灵活性   | 高（每步可调整）   | 中（需要 replan 机制）                |
+| 可预测性 | 低                 | 高                                    |
+| 适用任务 | 探索性、不确定性高 | 步骤明确、流程化                      |
+| 计算效率 | 每步都调用强模型   | Planner 用强模型，Executor 可用弱模型 |
+
+进阶变体 **ReWOO**（Reasoning Without Observation）将 ReAct 的交替执行改为一次性生成完整推理链和所有工具调用计划后批量执行，大幅减少 LLM 调用次数，但牺牲了根据中间结果调整策略的能力。Windsurf 的双层架构（规划代理 + 执行模型）是 Plan-and-Execute 的产品化实现。
+
+**LATS（Language Agent Tree Search）** —— 最"重型"的架构模式，将蒙特卡洛树搜索（MCTS）引入 Agent 规划。
+
+（[Zhou et al., 2023, ICML 2024](https://arxiv.org/abs/2310.04406)）
+
+```
+                    [初始状态]
+                   /     |     \
+               [方案A]  [方案B]  [方案C]
+              /    \      |       |
+         [A1]     [A2]  [B1]    [C1]
+          ↓        ↓     ↓       ↓
+       评分:0.8  评分:0.3  评分:0.6  评分:0.7
+          ↓                         ↓
+       继续展开A1               继续展开C1
+```
+
+四个核心步骤：选择（Selection，基于历史评分选择最有前途的节点）→ 展开（Expansion，生成多个可能方案）→ 评估（Evaluation，LLM 作为价值函数评分）→ 回溯（Backpropagation，更新路径评分）。
+
+关键创新是**自我反思（Self-Reflection）**——失败时不在原路径继续，而是反思失败原因、回溯到之前的决策点、基于反思结果选择新路径。这系统性地探索解空间，更可能找到全局最优解，但代价是计算开销极大（通常是 ReAct 的 3-10 倍 LLM 调用）。适用于高价值任务如复杂代码重构、数学证明等。
+
+**Reflexion** —— 语言化的自我反思机制。
+
+核心是在 Agent 执行失败后，通过**语言形式的强化学习**来改进后续执行（[Shinn et al., 2023, NeurIPS 2023](https://arxiv.org/abs/2303.11366)）：
+
+```
+尝试 #1: Agent 执行 → 失败
+  反思："我忽略了边界条件，下次需要先检查输入为空的情况"
+尝试 #2: Agent 带着反思经验重新执行 → 失败
+  反思："修复了边界条件但引入了类型错误，需要加类型检查"
+尝试 #3: Agent 带着两次反思经验执行 → 成功
+```
+
+Reflexion 将失败经验转化为自然语言"教训"存入记忆，供后续尝试参考——本质上是一种**无需梯度更新的强化学习**。
+
+**Multi-Agent 协作模式** —— 当单个 Agent 无法有效处理复杂任务时的选项。
+
+常见模式包括：监督者-工人（Supervisor-Worker，中心 Agent 路由分配任务给专业 Worker）、对等协作（Peer Collaboration，多个 Agent 平等对话达成共识，AutoGen 的默认模式）、流水线（Pipeline，Agent 按顺序接力处理）、辩论/对抗（Debate，多 Agent 持不同立场辩论出更可靠结论）。
+
+但 Anthropic 在 [Building Effective Agents](https://www.anthropic.com/research/building-effective-agents) 中明确指出：**不要过早引入多 Agent**。单个强大的 Agent 通常比多个弱 Agent 协作更可靠、更可调试。只在以下情况考虑：任务确实需要不同的专业知识领域、需要明确的职责分离（如安全审查与代码编写分开）、并行执行能显著提升效率。
+
+### 1.4 核心挑战与设计取舍
+
+构建生产级 Agent 面临五大核心挑战，每个都涉及非平凡的设计取舍。
+
+**挑战一：可靠性（Reliability）** —— Agent 在生产环境中的最大痛点。LLM 的不确定性在多步执行中累积放大——单步准确率 95% 的 Agent，10 步后端到端成功率仅约 60%（0.95¹⁰）。工具调用参数错误、幻觉、忽略指令等问题在长任务中频发。应对策略：防御性编程（输入校验、输出检查）、重试机制、人机协作断点。
+
+**挑战二：上下文管理（Context Management）** —— Agent 执行过程中的上下文膨胀是根本性问题。10 次工具调用可能产生数万 token 的上下文；压缩会丢失信息，不压缩则溢出或成本爆炸。当前最佳实践是 Claude Code 的自动 Compaction——在接近窗口限制时用 LLM 生成压缩摘要。
+
+**挑战三：安全性（Safety & Security）** —— Agent 能执行代码、访问文件、调用 API，安全风险远大于普通 LLM 应用。核心威胁：Prompt Injection（恶意输入诱导非预期操作）、权限过宽、数据泄露。应对策略：最小权限原则、沙箱执行、人工审批关键操作、输入/输出过滤。
+
+**挑战四：成本与延迟（Cost & Latency）** —— Agent 多轮 LLM 调用导致成本和延迟远高于单次调用。一个复杂 Coding Agent 任务可能需要 30-50 次 LLM 调用，使用 Opus 级别模型单任务成本可达数美元。应对策略：模型降级路由（简单步骤用小模型）、缓存、并行执行。
+
+**挑战五：评估与测试（Evaluation）** —— Agent 输出是非确定性的多步过程，传统单元测试不够用。需要端到端评估框架（如 [SWE-bench](https://www.swebench.com/) 用于评估 Coding Agent），关键指标包括任务完成率、步骤效率、工具调用准确率和成本。回归测试困难——相同输入不一定产生相同输出。
+
+**关键设计取舍矩阵**：
+
+| 设计选择               | 优势                   | 劣势                   | 代表产品          |
+| ---------------------- | ---------------------- | ---------------------- | ----------------- |
+| **单线程循环**   | 简单、可调试、可靠     | 无法真并行             | Claude Code       |
+| **多Agent协作**  | 专业化、可扩展         | 复杂、难调试、协调开销 | OpenAI Agents SDK |
+| **事件溯源**     | 可重放、可恢复         | 实现复杂               | OpenHands         |
+| **强制沙箱**     | 安全性好               | 性能开销、灵活性差     | SWE-agent         |
+| **可选沙箱**     | 灵活                   | 安全风险需额外管理     | OpenHands V1      |
+| **正则搜索**     | 确定性、零延迟、可调试 | 语义理解弱             | Claude Code       |
+| **向量嵌入搜索** | 语义理解强             | 需要索引、不确定性高   | Cursor            |
+
+> **Takeaway**：没有"最佳"架构——只有最适合特定场景的取舍。但一个共识正在形成：**简洁胜于复杂**。Claude Code 用单线程循环击败了许多复杂的多 Agent 系统，证明好的工程设计比花哨的架构更重要。正如 Anthropic 在 [Building Effective Agents](https://www.anthropic.com/research/building-effective-agents) 中所说——先用强模型 + 简单架构，这是被反复验证的最佳实践。
+
+> **本部分参考资料**：[ReAct 论文 (Yao et al., 2022)](https://arxiv.org/abs/2210.03629) | [LATS 论文 (Zhou et al., 2023)](https://arxiv.org/abs/2310.04406) | [Reflexion 论文 (Shinn et al., 2023)](https://arxiv.org/abs/2303.11366) | [Chain-of-Thought 论文 (Wei et al., 2022)](https://arxiv.org/abs/2201.11903) | [Building Effective Agents (Anthropic, 2024)](https://www.anthropic.com/research/building-effective-agents) | [MCP 协议文档](https://modelcontextprotocol.io) | [A2A 协议](https://google.github.io/A2A) | [Voyager 论文](https://arxiv.org/abs/2305.16291) | [AAIF (Linux Foundation)](https://www.linuxfoundation.org/press/linux-foundation-announces-the-formation-of-the-agentic-ai-foundation)
+
+---
+
+## 第二部分：深入 Claude Code 的 Agent 实现
+
+Claude Code 是 Anthropic 推出的 AI 编程工具，也是当前最成熟的 Coding Agent 产品之一。它的架构设计体现了一种"激进的简洁"哲学，值得深入学习。
+
+### 2.1 设计哲学："Do the Simple Thing First"
+
+Claude Code 的每一个设计决策都遵循同一原则——用最简单的方案解决问题：
+
+- **单线程主循环**而非多Agent群体（swarm）
+- **扁平消息历史**而非复杂的线程对话
+- **正则搜索**优先于向量嵌入
+- **Markdown 文件**优先于数据库存储
+- **单一Agent + 受控子 Agent** 而非多Agent协作
+
+选择简单方案的理由不是偷懒，而是为了三个关键质量属性：**可调试性**（debuggability）、**可靠性**（reliability）和**推理透明度**（transparent reasoning traces）。
+
+### 2.2 整体架构
+
+```text
+┌─────────────────────────────────────────────────────┐
+│                    用户终端 / IDE                      │
+│  (Terminal / VS Code / JetBrains / Desktop App)      │
+└──────────────┬──────────────────────────┬───────────┘
+               │ 用户输入                  │ 实时转向
+               ▼                          ▼
+┌─────────────────────────────────────────────────────┐
+│              Agent Harness（运行环境）                 │
+│                                                      │
+│  ┌────────────────────────────────────────────┐     │
+│  │         主循环 (Master Loop)                │     │
+│  │                                             │     │
+│  │  while (response.has_tool_calls):           │     │
+│  │    1. 模型推理 → 选择工具                    │     │
+│  │    2. 执行工具 → 获取结果                    │     │
+│  │    3. 结果反馈 → 继续循环                    │     │
+│  │  return 纯文本响应给用户                     │     │
+│  └────────────────────────────────────────────┘     │
+│                                                      │
+│  ┌──────────┐ ┌──────────┐ ┌──────────────────┐    │
+│  │ 工具系统  │ │ 权限系统  │ │  上下文管理       │    │
+│  │~18核心工具│ │ allow/   │ │  压缩 & 记忆      │    │
+│  │          │ │ deny     │ │                   │    │
+│  └──────────┘ └──────────┘ └──────────────────┘    │
+│                                                      │
+│  ┌──────────┐ ┌──────────┐ ┌──────────────────┐    │
+│  │ Skills   │ │ Subagent│ │  CLAUDE.md 记忆   │    │
+│  │ 系统     │ │ 子 Agent  │ │  项目级 & 用户级   │    │
+│  └──────────┘ └──────────┘ └──────────────────┘    │
+└─────────────────────────────────────────────────────┘
+               │
+               ▼
+┌─────────────────────────────────────────────────────┐
+│              Claude 模型 (Sonnet / Opus)              │
+│         推理、代码理解、工具选择、计划生成              │
+└─────────────────────────────────────────────────────┘
+```
+
+Claude Code 在三种环境中运行（本地、云端、远程控制），但核心 Agent 循环完全一致——这种一致性本身就是好的工程设计。
+
+### 2.3 Agent Loop：单线程主循环的威力
+
+Claude Code 的核心是一个经典的 while-loop 模式：
+
+```python
+# 伪代码
+function agentLoop(userMessage):
+    messages = [systemPrompt, userMessage]
+
+    while true:
+        response = claude.chat(messages)
+
+        if response.has_tool_calls():
+            for tool_call in response.tool_calls:
+                result = execute_tool(tool_call)
+                messages.append(tool_call)
+                messages.append(result)
+        else:
+            # 纯文本响应，循环自然结束
+            return response.text
+```
+
+**关键特征**：
+
+- **单线程**：只有一个主循环在运行，避免竞态条件
+- **扁平历史**：所有消息在一个平面列表中，没有复杂的嵌套线程
+- **自然终止**：当模型生成不包含工具调用的纯文本时，循环自然结束
+- **工具驱动**：模型通过选择是否调用工具来控制流程
+
+每个任务大致经历三个**动态交织**的阶段：
+
+1. **收集上下文**（Gather Context）：搜索文件、读取代码、理解项目结构
+2. **执行操作**（Take Action）：编辑文件、运行命令、创建新文件
+3. **验证结果**（Verify Results）：运行测试、检查输出、对比预期
+
+一个简单问题可能只需要阶段1；一个bug修复会反复经历三个阶段；一个重构任务可能需要大量的阶段3验证。
+
+**用户中断与转向机制**：Claude Code 的 Agent 循环支持用户在执行过程中进行中断和转向。这不是通过某个独立的队列组件实现的，而是**主循环本身的设计特性**——在每次工具调用之间，循环会检查用户是否有新的输入。
+
+关键能力包括：**Escape 中断**（用户随时按 Escape 键中断当前操作，输入新指令后 Agent 基于当前对话历史继续工作）、**权限拦截点**（需要权限的工具如 Bash、Edit 在执行前暂停等待确认，用户可拒绝并给出新指导）、**Hooks 拦截**（通过 `PreToolUse` Hook 插入自定义验证逻辑，Hook 返回退出码 2 时阻止工具执行）。
+
+这种设计使体验从"提交任务后等待结果"变成了**交互式的协作过程**——用户始终可以介入循环。
+
+> 参考：[How Claude Code Works](https://code.claude.com/docs/en/how-claude-code-works) | [Hooks](https://code.claude.com/docs/en/hooks) | [Permissions](https://code.claude.com/docs/en/permissions)
+
+### 2.4 子 Agent系统（Subagents）：受控的并行性
+
+Claude Code 通过内置的 **Agent 工具**来创建子 Agent。每个子 Agent 是一个独立的 AI 助手，运行在**自己的上下文窗口**中，拥有独立的系统提示词、工具权限和权限设置。
+
+```text
+┌──────────────────────────────────────┐
+│         主 Agent (Main Context)       │
+│                                       │
+│  调用 Agent 工具 ──→ ┌─────────────┐ │
+│                      │  Subagent   │ │
+│                      │  独立上下文    │ │
+│                      │  独立工具权限  │ │
+│                      └──────┬──────┘ │
+│         ←── 结果返回 ────────┘        │
+└──────────────────────────────────────┘
+
+关键约束：子 Agent 不能再创建子 Agent（防止无限递归嵌套）
+```
+
+**内置子 Agent 类型**：
+
+Claude Code 内置了以下子 Agent 类型，每种类型有不同的模型、工具权限和用途：
+
+| 子 Agent 类型               | 模型                  | 可用工具                                      | 用途                            | 特点                                         |
+| --------------------------- | --------------------- | --------------------------------------------- | ------------------------------- | -------------------------------------------- |
+| **Explore**           | Haiku（快速、低延迟） | 只读工具（禁止 Write 和 Edit）                | 文件发现、代码搜索、代码库探索  | 支持 quick/medium/very thorough 三个深度级别 |
+| **Plan**              | 继承主对话模型        | 只读工具（禁止 Write 和 Edit）                | 在 Plan 模式下进行代码库研究    | 用于规划阶段的信息收集                       |
+| **General-purpose**   | 继承主对话模型        | 所有工具                                      | 复杂研究、多步操作、代码修改    | 最强大的子 Agent，可执行完整任务             |
+| **Bash**              | 继承主对话模型        | Bash 相关                                     | 在独立上下文中执行终端命令      | 隔离命令执行环境                             |
+| **Claude Code Guide** | Haiku                 | 只读（Read, Glob, Grep, WebFetch, WebSearch） | 回答关于 Claude Code 功能的问题 | 专门的帮助文档查询 Agent                     |
+
+类型区分的核心依据是两个维度：**模型选择**（决定速度与能力的权衡）和**工具权限**（决定能做什么操作）。
+
+**自定义子 Agent**：
+
+除内置类型外，用户可通过 **Markdown 文件 + YAML frontmatter** 定义自定义子 Agent，存放在 `.claude/agents/`（项目级）或 `~/.claude/agents/`（用户级）目录：
+
+```markdown
+---
+name: code-reviewer
+description: Reviews code for quality and best practices
+tools: Read, Glob, Grep
+model: sonnet
+---
+
+You are a code reviewer. Analyze code for:
+- Code quality and readability
+- Potential bugs and edge cases
+- Performance issues
+- Security vulnerabilities
+
+Provide specific, actionable feedback with line references.
+```
+
+**上下文管理与生命周期**：每个子 Agent 的上下文独立管理——独立上下文窗口、可通过 `SendMessage` 恢复、转录存储在本地 JSONL 文件、达到约 95% 容量时自动压缩、主对话的压缩不影响子 Agent 的转录。
+
+这种"单Agent + 受控子 Agent"的模式，与 OpenAI 的多Agent Handoff 模式形成鲜明对比。Claude 的模式更像"老板分配任务"，而 OpenAI 更像"接力赛传递控制权"。
+
+> 参考：[Sub-agents](https://code.claude.com/docs/en/sub-agents) | [Tools Reference](https://code.claude.com/docs/en/tools-reference) | [Permissions](https://code.claude.com/docs/en/permissions)
+
+### 2.5 工具系统：少即是多的设计
+
+Anthropic 的一个关键洞察：**在工具优化上花的精力应该超过 prompt 优化**。Claude Code 内置约 18 个核心工具（Read、Write、Edit、Bash、Glob、Grep、Agent、WebFetch、WebSearch、TodoWrite、NotebookEdit、Skill 等），加上 MCP 扩展可达 30+，按功能分组，每个都经过精心设计。
+
+> 参考：[Tools Reference](https://code.claude.com/docs/en/tools-reference) | [Permissions](https://code.claude.com/docs/en/permissions)
+
+#### 完整工具清单
+
+| 工具                                             | 功能描述                                 | 需要权限          |
+| ------------------------------------------------ | ---------------------------------------- | ----------------- |
+| **Agent**                                  | 生成子 Agent，在独立上下文窗口中处理任务 | 否                |
+| **AskUserQuestion**                        | 向用户提出多选问题，收集需求或消除歧义   | 否                |
+| **Bash**                                   | 在用户环境中执行 Shell 命令              | **是**      |
+| **Edit**                                   | 对指定文件进行精确的字符串替换编辑       | **是**      |
+| **Glob**                                   | 基于通配符模式匹配查找文件               | 否                |
+| **Grep**                                   | 基于正则表达式搜索文件内容               | 否                |
+| **Read**                                   | 读取文件内容                             | 否                |
+| **Write**                                  | 创建新文件或覆盖已有文件                 | **是**      |
+| **WebFetch**                               | 从指定 URL 获取内容                      | **是**      |
+| **WebSearch**                              | 执行网络搜索                             | **是**      |
+| **TodoWrite**                              | 管理会话任务检查列表                     | 否                |
+| **ToolSearch**                             | 搜索并加载延迟加载的工具                 | 否                |
+| **Skill**                                  | 在主对话中执行技能（Skill）              | **是**      |
+| **NotebookEdit**                           | 修改 Jupyter notebook 的单元格           | **是**      |
+| **LSP**                                    | 语言服务器代码智能：类型错误、跳转定义等 | 否                |
+| **EnterPlanMode / ExitPlanMode**           | 切换计划模式                             | ExitPlanMode 需要 |
+| **EnterWorktree / ExitWorktree**           | Git worktree 隔离环境                    | 否                |
+| **TaskCreate/Get/List/Output/Stop/Update** | 任务管理系列工具                         | 否                |
+| **CronCreate/Delete/List**                 | 定时任务管理                             | 否                |
+
+> 以下详细介绍高频使用的核心工具参数，其余工具（如 Task 系列、Cron 系列、LSP 等）的参数定义可参考 [官方工具参考文档](https://code.claude.com/docs/en/tools-reference)。
+
+#### 核心工具参数详解
+
+**文件读取与发现**：
+
+**Read** — 读取文件内容，支持 PDF、图片、Jupyter notebook
+
+| 参数          | 类型   | 必填 | 说明                                                      |
+| ------------- | ------ | ---- | --------------------------------------------------------- |
+| `file_path` | string | 是   | 文件的绝对路径                                            |
+| `offset`    | number | 否   | 起始行号（用于大文件分段读取）                            |
+| `limit`     | number | 否   | 读取行数                                                  |
+| `pages`     | string | 否   | PDF 页面范围，如 `"1-5"`（仅 PDF 适用，每次最多 20 页） |
+
+**Glob** — 通配符文件搜索，结果按修改时间排序
+
+| 参数        | 类型   | 必填 | 说明                            |
+| ----------- | ------ | ---- | ------------------------------- |
+| `pattern` | string | 是   | glob 匹配模式，如 `"**/*.ts"` |
+| `path`    | string | 否   | 搜索目录，默认为当前工作目录    |
+
+**Grep** — 基于 ripgrep 的正则内容搜索
+
+| 参数                     | 类型    | 必填 | 说明                                                           |
+| ------------------------ | ------- | ---- | -------------------------------------------------------------- |
+| `pattern`              | string  | 是   | 正则表达式模式                                                 |
+| `path`                 | string  | 否   | 搜索路径，默认当前工作目录                                     |
+| `glob`                 | string  | 否   | 文件过滤 glob，如 `"*.js"`                                   |
+| `output_mode`          | string  | 否   | `"content"` / `"files_with_matches"`（默认） / `"count"` |
+| `multiline`            | boolean | 否   | 是否启用跨行匹配（默认 false）                                 |
+| `-A` / `-B` / `-C` | number  | 否   | 匹配行前后的上下文行数                                         |
+
+**为什么选正则搜索而非向量嵌入？** 确定性（相同查询总是返回相同结果）、可调试（用户可以理解搜索行为）、零延迟（无需建索引）、简洁（不需要嵌入模型和向量数据库）。
+
+**代码修改**：
+
+**Edit** — 精确字符串替换，要求 `old_string` 在文件中唯一
+
+| 参数            | 类型    | 必填 | 说明                                     |
+| --------------- | ------- | ---- | ---------------------------------------- |
+| `file_path`   | string  | 是   | 要修改的文件的绝对路径                   |
+| `old_string`  | string  | 是   | 要替换的原始文本（必须精确匹配且唯一）   |
+| `new_string`  | string  | 是   | 替换后的新文本（必须与 old_string 不同） |
+| `replace_all` | boolean | 否   | 是否替换所有出现位置（默认 false）       |
+
+**Write** — 创建新文件或完整覆盖已有文件
+
+| 参数          | 类型   | 必填 | 说明                 |
+| ------------- | ------ | ---- | -------------------- |
+| `file_path` | string | 是   | 文件的绝对路径       |
+| `content`   | string | 是   | 要写入的完整文件内容 |
+
+**Edit 工具的设计堪称经典**——如果 `old_string` 在文件中不唯一，操作**直接失败**，强制模型提供更多上下文。这种"最小修改原则"推动了 diff-first 工作流，比"给行号范围替换"更安全。
+
+**执行与外部访问**：
+
+**Bash** — 执行 Shell 命令，支持风险分类和命令过滤
+
+| 参数            | 类型   | 必填 | 说明                            |
+| --------------- | ------ | ---- | ------------------------------- |
+| `command`     | string | 是   | 要执行的 Shell 命令             |
+| `timeout`     | number | 否   | 超时时间（毫秒），最大 600000ms |
+| `description` | string | 否   | 命令的简短描述                  |
+
+**WebFetch** — 从指定 URL 获取网页内容
+
+| 参数       | 类型   | 必填 | 说明                     |
+| ---------- | ------ | ---- | ------------------------ |
+| `url`    | string | 是   | 要获取内容的 URL         |
+| `prompt` | string | 是   | 指导如何处理获取到的内容 |
+
+**WebSearch** — 执行网络搜索
+
+| 参数      | 类型   | 必填 | 说明           |
+| --------- | ------ | ---- | -------------- |
+| `query` | string | 是   | 搜索查询关键词 |
+
+**Agent** — 子 Agent 调度，创建拥有独立上下文窗口的子 Agent
+
+| 参数              | 类型   | 必填 | 说明                                                                    |
+| ----------------- | ------ | ---- | ----------------------------------------------------------------------- |
+| `prompt`        | string | 是   | 分配给子 Agent 的任务描述                                               |
+| `description`   | string | 是   | 3-5 个词的简短摘要                                                      |
+| `subagent_type` | string | 否   | 子 Agent 类型（如 `"general-purpose"`, `"Explore"`, `"Plan"` 等） |
+| `model`         | string | 否   | 模型覆盖（`"sonnet"`, `"opus"`, `"haiku"`）                       |
+| `isolation`     | string | 否   | 隔离模式，设为 `"worktree"` 可在独立 Git worktree 中运行              |
+
+**Bash 工具的安全设计**：
+
+```text
+用户请求命令 → 风险分类 →
+  低风险（ls, cat, git status）→ 直接执行
+  中风险（npm install）→ 根据配置决定
+  高风险（rm -rf, git push --force）→ 必须用户确认
+  注入风险（含 $(), 反引号）→ 过滤拦截
+```
+
+**编排工具**：TodoWrite（结构化任务列表）、Agent（子 Agent调度）、Skill（技能分发器）、AskUserQuestion（向用户提问）。
+
+> 参考：[Tools Reference](https://code.claude.com/docs/en/tools-reference) | [Permissions](https://code.claude.com/docs/en/permissions) | [Sub-agents](https://code.claude.com/docs/en/sub-agents)
+
+#### Skills 系统：元工具架构
+
+Skills 不是传统意义上的"工具"——它们是**专门的 prompt 模板**，在触发时注入领域特定指令到对话上下文中：
+
+```text
+工作流程：
+1. 会话启动时：加载所有 Skill 的简短描述（轻量元数据）
+2. 用户请求匹配时：Claude 通过自然语言理解选择 Skill
+3. Skill 激活时：注入完整 Skill 指令到上下文
+4. 执行期间：Skill 可修改工具权限、切换模型
+5. 完成后：恢复原始权限设置
+```
+
+关键在于**渐进式加载**——只在发现阶段加载描述，只在选中时加载完整指令，避免上下文饱和。
+
+### 2.6 系统提示词：动态组装的工程
+
+Claude Code 的系统提示词不是一个静态字符串，而是**动态组装**的。提示词层级（优先级从高到低）：
+
+```text
+1. 内置系统提示词（行为指令、工具描述、安全规则）
+2. 会话级注入上下文（--system-prompt、输出模式）
+3. CLAUDE.md（项目级/用户级记忆）
+4. Skills 提示词（按需加载）
+5. 系统提醒（TODO状态注入、长对话提醒等，多种场景触发）
+```
+
+**前缀缓存优化**——提示词结构专门为 Prefix Caching 设计：
+
+```text
+[静态行为指导]          ← 无模板变量，所有会话共享缓存
+[工具描述]              ← 无模板变量，共享缓存
+─── 缓存边界 ───
+[会话路径相关内容]      ← 会话级缓存
+[用户信息]              ← 每用户缓存
+[环境变量（日期等）]     ← 最易变，放最后
+```
+
+实际效果：由于静态内容占比高且排列在前，大部分 token 可以被缓存命中而无需重新处理，显著降低成本和延迟。前缀缓存命中率是生产 Agent 最重要的成本指标之一。
+
+### 2.7 上下文管理：系统工程而非单一技术
+
+> 来源：[How Claude Code Works - Context Management](https://code.claude.com/docs/en/how-claude-code-works) | [Sub-agents - Context](https://code.claude.com/docs/en/sub-agents)
+
+#### 自动压缩（Auto-Compaction）
+
+当上下文窗口使用率达到约 **95%** 时，自动压缩机制触发。这是 Claude Code 能处理长时间复杂任务的**核心基础设施**之一。
+
+```text
+上下文压缩流程：
+
+1. 检测上下文使用率 ≈ 95%
+2. 首先清除较旧的工具输出（这些往往是最大的 token 消耗者）
+3. 如果仍然不够，对对话进行摘要压缩
+4. 保留：用户请求、关键代码片段、最近的工具调用结果
+5. 可能丢失：对话早期的详细指令、中间过程的冗余输出
+6. 关键信息迁移到 CLAUDE.md（长期存储）
+```
+
+**为什么自动压缩如此关键？** 在实际编码任务中，一次 `Read` 操作可能返回 2000 行代码，一次 `Bash` 执行可能产生大量日志输出，一个 `Grep` 搜索可能返回数百个匹配结果。没有自动压缩，仅 3-5 次工具调用就可能耗尽上下文窗口。
+
+**用户可主动触发压缩**——通过 `/compact` 命令，还可指定压缩焦点：
+
+```bash
+/compact                       # 默认压缩
+/compact 聚焦于数据库迁移部分   # 指定保留重点
+```
+
+**子 Agent 的上下文独立性**也是压缩策略的重要组成部分：每个子 Agent 有独立的上下文窗口，达到约 95% 容量时独立压缩。主对话的压缩不影响子 Agent 的转录，反之亦然。
+
+> 参考：[CLI Reference - Slash Commands](https://code.claude.com/docs/en/cli-reference)
+
+#### 多层记忆机制
+
+> 来源：[How Claude Code Works - Memory](https://code.claude.com/docs/en/how-claude-code-works) | [Settings - CLAUDE.md](https://code.claude.com/docs/en/settings) | [Sub-agents - Transcripts](https://code.claude.com/docs/en/sub-agents)
+
+```text
+┌─────────────────────────────────────────────────────────┐
+│  第一层：短期记忆 — 对话上下文窗口                         │
+│  ├── 当前会话的完整消息历史                                │
+│  ├── 包含所有工具调用和结果                                │
+│  └── 达到 95% 时自动压缩                                  │
+├─────────────────────────────────────────────────────────┤
+│  第二层：中期记忆 — CLAUDE.md + Auto Memory                │
+│  ├── CLAUDE.md：项目级规则、编码约定、团队偏好             │
+│  │   └── 存储位置层级：项目根目录 > 子目录 > ~/.claude/    │
+│  ├── MEMORY.md：Agent 自动学习的模式                      │
+│  │   └── 前 200 行在每次会话启动时自动加载到上下文          │
+│  └── 跨会话持久化，手动或自动维护                          │
+├─────────────────────────────────────────────────────────┤
+│  第三层：长期记忆 — 文件系统                               │
+│  ├── Git 历史：完整的变更记录，支持回溯                    │
+│  ├── 项目文件：代码、文档、配置                            │
+│  ├── 转录文件：~/.claude/projects/{project}/{sessionId}.jsonl │
+│  └── 子 Agent 转录：                                      │
+│      └── ~/.claude/projects/.../subagents/agent-{agentId}.jsonl │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Auto Memory 的工作方式**：Claude 在工作过程中自动学习并保存模式（如项目惯例、用户偏好），存储在 MEMORY.md 中，在后续会话中自动应用。
+
+**设计选择：用 Markdown 文件而非向量数据库**——文件系统是最好的外部记忆。简单、可读、可版本控制。用户可以直接编辑，甚至在团队中通过 Git 共享。
+
+#### 会话管理
+
+> 来源：[CLI Reference - Session Management](https://code.claude.com/docs/en/cli-reference)
+
+```bash
+claude --continue        # 恢复上一个会话（同一会话 ID，保留完整对话历史）
+claude --resume          # 交互式选择并恢复特定历史会话
+claude --fork-session    # 从当前点分叉出新会话（探索不同方案，原会话不受影响）
+```
+
+会话之间是独立的——每个新会话从空白上下文开始。跨会话的信息传递依赖 Auto Memory 和 CLAUDE.md，而非共享上下文。会话转录以 JSONL 格式存储在本地，即使上下文被压缩，原始完整对话仍可追溯。
+
+#### 多步任务处理策略
+
+> 来源：[How Claude Code Works - Agent Loop](https://code.claude.com/docs/en/how-claude-code-works) | [Sub-agents](https://code.claude.com/docs/en/sub-agents)
+
+对于复杂多步任务，Claude Code 采用以下协同策略：TodoWrite 规划（结构化检查列表，状态通过系统提醒注入上下文）、**渐进执行**（每次只标记一个任务 `in_progress`）、子 Agent 隔离（主 Agent 保持精简上下文，子 Agent 在独立窗口完成大量代码阅读和修改）、Checkpoint 保护（每次文件编辑前快照，支持回滚）、上下文感知压缩（`/compact` 指定焦点，让压缩器保留当前任务重点）。
+
+#### 长时间 Agent Harness 最佳实践
+
+> 来源：[Effective Harnesses for Long-Running Agents](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents)（作者：Justin Young，2025-11-26）| [Building Effective Agents](https://www.anthropic.com/research/building-effective-agents)
+
+当任务规模超出单个上下文窗口时，需要跨多个会话持续推进。Anthropic 工程博客分享了一套经过验证的 Harness 框架，核心挑战是：**每个新会话从零开始，没有前一个会话的记忆**。
+
+**两阶段 Agent 架构：** 将任务分为 Initializer Agent（初始化 Agent，仅首次会话运行）和 Coding Agent（编码 Agent，后续所有会话运行）。Initializer Agent 创建三个基础产物——`init.sh` 环境启动脚本、`claude-progress.txt` 进度追踪日志、以及功能规格列表（JSON 格式，每个功能含 `category`/`description`/`steps`/`passes` 字段，初始 `passes: false`）。Coding Agent 每次会话读取进度文件和 Git 历史，选取优先级最高的未完成功能，实现并通过 Puppeteer MCP 进行浏览器端到端测试验证后，更新状态并提交 Git。
+
+**关键约束**：Agent 不得删除或编辑测试本身，只能修改 `passes` 状态——防止 Agent 通过降低标准来"通过"测试。
+
+**标准化会话启动流程：** (1) 验证工作目录 → (2) 读取 git log 和 claude-progress.txt → (3) 查找最高优先级未完成功能 → (4) 运行 init.sh 启动开发环境 → (5) 执行基础端到端测试（发现会话边界问题）→ (6) 开始功能开发。
+
+**四种失败模式与对策**（博客原文总结）：Agent 过早宣布完成 → 200+ 功能的详细规格列表约束；环境留有 bug 且进度未记录 → claude-progress.txt + Git 提交；未充分测试就标记完成 → Puppeteer 强制验证；花大量时间弄清如何运行应用 → init.sh + 标准启动流程。
+
+### 2.8 与其他 Coding Agent 的横向对比
+
+| 维度                 | Claude Code            | OpenHands           | SWE-agent          | OpenClaw          |
+| -------------------- | ---------------------- | ------------------- | ------------------ | ----------------- |
+| **核心范式**   | 单线程主循环           | 事件溯源            | ACI + Docker       | WebSocket Gateway |
+| **Agent模式**  | 单Agent + 受控子 Agent | 可配置单/多Agent    | 单Agent → 多Agent | 单Agent + 多渠道  |
+| **工具数量**   | ~25（核心18）          | 模块化可扩展        | ACI自定义          | 100+ AgentSkills  |
+| **上下文管理** | 压缩器 + CLAUDE.md     | 事件溯源 + 历史压缩 | HistoryProcessor   | 会话隔离          |
+| **模型绑定**   | Claude（Sonnet/Opus）  | 100+模型            | 任意模型           | 多模型+Failover   |
+| **主要场景**   | 专业编码               | 编码+研究           | 软件工程研究       | 通用个人助手      |
+
+**OpenHands** 的核心创新是**事件溯源状态管理**——所有交互都是不可变事件，支持确定性重放和可靠会话恢复。Agent本身是无状态的事件处理器。从V0到V1的关键演进是从"强制沙箱"到"可选隔离"。
+
+**SWE-agent** 的核心贡献是提出了 **ACI（Agent-Computer Interface）** 概念——为AI Agent专门设计的交互界面，而不是让Agent直接使用人类设计的命令行工具。这个理念与Anthropic的工具设计原则高度一致。
+
+> **Takeaway**：Claude Code 的成功来自三个关键选择——(1) 简单的单线程循环；(2) 精心设计的少量工具；(3) 系统级的上下文管理。这些选择之间相互增强：简单循环使调试容易，少量精良工具使循环可靠，上下文管理使长任务可行。
+
+---
+
+### 2.9 Claude Agent Teams（CLI 功能）：从单Agent到团队协作——底层实现深度剖析
+
+> **⚠️ 重要澄清：Agent Teams 是 Claude Code CLI 专属功能，不是 Claude Agent SDK 的 API**
+>
+> 经查阅官方文档确认：Agent Teams **仅在 Claude Code CLI（命令行工具）中可用**，通过自然语言指令创建和管理团队。Claude Agent SDK（Python/TypeScript 编程接口）**不提供** Agent Teams 相关的 API（如 `create_team()`、团队协调方法等）。SDK 中可用的多 Agent 能力仅限于 **Subagent 模式**（通过 `AgentDefinition` 和 `Agent` 工具实现父子委派）。
+>
+> - Agent Teams 官方文档（CLI）：https://code.claude.com/docs/en/agent-teams
+> - Agent SDK Subagent 文档：https://platform.claude.com/docs/en/agent-sdk/subagents
+> - Agent SDK Overview（无 Agent Teams API）：https://platform.claude.com/docs/en/agent-sdk/overview
+
+Agent Teams 是 Anthropic 推出的**多 Agent 协作机制**（随 Opus 4.6 于 2026年2月发布，当前为实验性功能），允许多个 Claude Code 实例作为一个团队协同工作。与 SDK 的 Subagent 模式不同，Agent Teams 中的成员之间可以**直接通信**，而不仅仅是向主 Agent 汇报。**需要特别注意的是，Agent Teams 是 Claude Code CLI 的功能，不能通过 SDK API 编程调用。**
+
+#### 2.9.1 底层实现原理：基于文件系统的去中心化协调
+
+Agent Teams 采用了一种**去中心化的、基于文件系统的协调模型**——这是一个非常务实的架构决策。与其设计复杂的 IPC（进程间通信）框架或消息队列，Anthropic 选择了磁盘文件作为所有 Agent 之间的唯一共享通信面。
+
+**为什么选择文件系统？** 因为 Agent Teams 需要兼容三种不同的 spawn 后端（in-process 模式、tmux 模式、iTerm2 模式）。当 Agent 以独立 OS 进程运行时，文件系统是最简单、最可靠的共享表面。（参考：[Porting Claude Code&#39;s Agent Teams to OpenCode](https://dev.to/uenyioha/porting-claude-codes-agent-teams-to-opencode-4hol)）
+
+**Teammate 的本质是独立的 `claude` CLI 进程**。Team Lead（主 Claude Code 会话）通过内部的 `Task` 工具 spawn 新的 `claude` 命令行进程作为 Teammate。每个 Teammate 是一个完全独立的 Claude Code 实例，拥有自己的：
+
+- 独立上下文窗口（不继承 Lead 的对话历史，只接收 spawn prompt）
+- 独立的 LLM 调用链
+- 独立的工具执行环境
+- 项目级上下文自动加载（`CLAUDE.md`、MCP servers、skills——与普通 Claude Code 会话相同）
+
+spawn 时通过环境变量注入团队信息：
+
+| 环境变量                           | 作用                               |
+| ---------------------------------- | ---------------------------------- |
+| `CLAUDE_CODE_TEAM_NAME`          | 团队标识符，用于定位共享文件       |
+| `CLAUDE_CODE_PLAN_MODE_REQUIRED` | 是否要求 Teammate 先提交计划再执行 |
+
+内部通过 `AsyncLocalStorage` 维护运行时上下文（`agentId`、`agentName`、`teamName`、`parentSessionId`、`color`、`planModeRequired`），关键内部函数包括 `getTeammateContext()`、`setDynamicTeamContext()`、`isTeammate()`、`isTeamLead()` 和 `waitForTeammatesToBecomeIdle()`。（参考：[Reverse-Engineering Claude Code Agent Teams](https://dev.to/nwyin/reverse-engineering-claude-code-agent-teams-architecture-and-protocol-o49)）
+
+#### 2.9.2 文件系统架构：共享状态的存储结构
+
+Agent Teams 的所有共享状态都存储在本地文件系统中：
+
+```text
+~/.claude/
+├── teams/{team-name}/
+│   ├── config.json                    # 团队成员注册表
+│   └── inboxes/
+│       ├── {agent-name-1}.json        # Agent 1 的收件箱
+│       ├── {agent-name-2}.json        # Agent 2 的收件箱
+│       └── ...
+└── tasks/{team-name}/
+    ├── .lock                          # 文件锁（flock 互斥）
+    ├── .highwatermark                 # 下一个可用任务 ID
+    ├── 1.json                         # 任务 #1
+    ├── 2.json                         # 任务 #2
+    └── ...
+```
+
+**`config.json`（团队配置）** —— 包含 `members` 数组，每个成员有 `name`、`agentId` 和 `agentType` 字段。**名称（name）是主要寻址机制**，不是 UUID。所有消息路由都基于 `name` 字段。Teammate 可以读取此文件来发现其他团队成员。
+
+**任务文件（`{id}.json`）** —— 每个任务存储为独立的 JSON 文件，结构如下：
+
+```json
+{
+  "id": "1",
+  "subject": "Review authentication module for security vulnerabilities",
+  "description": "Focus on token handling, session management, and input validation...",
+  "activeForm": "Reviewing authentication module security",
+  "owner": "security-reviewer",
+  "status": "in_progress",
+  "blocks": [],
+  "blockedBy": ["3"]
+}
+```
+
+任务状态机：`pending` → `in_progress` → `completed`（也可标记为 `deleted`）。`blocks` 和 `blockedBy` 数组实现任务依赖——当一个 Teammate 完成其他任务所依赖的任务时，被阻塞的任务自动解除阻塞，无需手动干预。
+
+**并发控制机制**：`.lock` 文件使用 `flock()` 系统调用实现文件系统级互斥锁。`.highwatermark` 文件包含一个整数，跟踪下一个可用任务 ID。当多个 Teammate 同时尝试认领同一任务时，文件锁保证只有一个能成功。Teammate 按**最小 ID 优先**策略认领任务，且不能认领 `blockedBy` 数组中有未完成依赖的任务。
+
+#### 2.9.3 邮箱消息传递机制：Agent 间如何通信
+
+Agent 间通信使用**基于 JSON 文件的异步邮箱系统**。每个 Agent 在 `~/.claude/teams/{team-name}/inboxes/` 下有一个以其名称命名的 JSON 文件作为收件箱。
+
+**消息信封格式**：
+
+```json
+{
+  "from": "security-reviewer",
+  "text": "{\"type\":\"message\",\"payload\":{\"content\":\"Found SQL injection in auth.py line 42\"}}",
+  "timestamp": "2026-03-25T10:30:00.000Z",
+  "read": false
+}
+```
+
+注意一个关键实现细节：系统使用了 **JSON-within-JSON 编码**——`text` 字段中嵌套了序列化的消息对象。发送者向目标收件箱文件追加条目，接收者轮询（polling）自己的收件箱文件检查新消息。
+
+**消息类型**：
+
+| 消息类型                                               | 方向             | 用途                                                        |
+| ------------------------------------------------------ | ---------------- | ----------------------------------------------------------- |
+| `task_assignment`                                    | Lead → Teammate | 任务分发，包含完整任务详情                                  |
+| `message`                                            | 任意 → 任意     | 点对点直接通信                                              |
+| `broadcast`                                          | Lead → 全体     | 群发消息（向每个 Teammate 的收件箱写入相同内容，成本 O(N)） |
+| `shutdown_request` / `shutdown_response`           | Lead ↔ Teammate | 优雅关闭握手                                                |
+| `plan_approval_request` / `plan_approval_response` | Teammate ↔ Lead | 计划审批工作流                                              |
+| `idle_notification`                                  | Teammate → Lead | 状态信号（Teammate 完成当前工作后自动发送）                 |
+
+**通信拓扑本质上是 Leader-centric（以 Lead 为中心）的路由模式**。虽然 Teammate 之间可以直接发消息，但主要通信模式是 Teammate → Lead → Teammate。Lead 自动接收所有 Teammate 的消息，无需主动轮询。
+
+**Idle 状态语义**：每次 LLM turn 结束后，Teammate 会自动转入 idle 状态并发送 `idle_notification`。这是正常的静息状态（resting state），不是错误。当收件箱收到新消息时，idle 的 Teammate 在下一个轮询周期被唤醒。
+
+**写入性能特征**（来自 OpenCode 的逆向分析）：由于采用 JSON 数组存储，每次写入都需要 read-modify-write 操作（反序列化整个文件 → 追加条目 → 重写），每条消息的复杂度为 **O(N)**，其中 N 是消息总数。这与 JSONL（每行一条消息，追加写入 O(1)）的替代方案形成对比，是当前实现的一个已知局限。
+
+#### 2.9.4 架构总览图
+
+```text
+┌─────────────────────────────────────────────────────────────────┐
+│                         Agent Team                               │
+│                                                                  │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐       │
+│  │  Team Lead    │◄──►│ Teammate A   │◄──►│ Teammate B   │       │
+│  │  (主进程)     │    │ (独立CLI进程) │    │ (独立CLI进程) │       │
+│  │              │    │              │    │              │       │
+│  │ agentId: 001 │    │ agentId: 002 │    │ agentId: 003 │       │
+│  │ 独立上下文窗口 │    │ 独立上下文窗口 │    │ 独立上下文窗口 │       │
+│  └──────┬───────┘    └──────┬───────┘    └──────┬───────┘       │
+│         │                   │                   │                │
+│    ┌────▼───────────────────▼───────────────────▼────┐          │
+│    │     Mailbox System（基于文件的异步邮箱）           │          │
+│    │     ~/.claude/teams/{name}/inboxes/*.json        │          │
+│    │                                                  │          │
+│    │  ┌─────────┐ ┌─────────┐ ┌─────────┐           │          │
+│    │  │lead.json│ │  a.json │ │  b.json │           │          │
+│    │  │(Lead信箱)│ │(A的信箱) │ │(B的信箱) │           │          │
+│    │  └─────────┘ └─────────┘ └─────────┘           │          │
+│    └─────────────────────────────────────────────────┘          │
+│                                                                  │
+│    ┌─────────────────────────────────────────────────┐          │
+│    │     Shared Task List（文件锁保护的任务系统）       │          │
+│    │     ~/.claude/tasks/{name}/                      │          │
+│    │                                                  │          │
+│    │  .lock  .highwatermark  1.json  2.json  3.json  │          │
+│    │  (flock)  (ID计数器)     (任务)   (任务)   (任务)  │          │
+│    └─────────────────────────────────────────────────┘          │
+│                                                                  │
+│    ┌─────────────────────────────────────────────────┐          │
+│    │     config.json（团队成员注册表）                  │          │
+│    │     ~/.claude/teams/{name}/config.json           │          │
+│    │     { "members": [{ name, agentId, agentType }]} │          │
+│    └─────────────────────────────────────────────────┘          │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+| 组件                | 角色                                                    | 存储位置                                    |
+| ------------------- | ------------------------------------------------------- | ------------------------------------------- |
+| **Team Lead** | 主 Claude Code 会话，创建团队、spawn Teammate、协调工作 | 主进程                                      |
+| **Teammates** | 独立的 `claude` CLI 进程，各自处理分配的任务          | 子进程                                      |
+| **Task List** | 共享任务列表，支持依赖、自主认领、文件锁防竞态          | `~/.claude/tasks/{team-name}/`            |
+| **Mailbox**   | 基于 JSON 文件的异步消息系统，支持点对点和广播          | `~/.claude/teams/{team-name}/inboxes/`    |
+| **Config**    | 团队成员注册表，以 name 为主要寻址键                    | `~/.claude/teams/{team-name}/config.json` |
+
+#### 2.9.5 与 Subagent 的本质区别：实现层面的深入对比
+
+Subagent 和 Agent Teams 都能实现任务并行化，但它们在**进程模型、通信拓扑、上下文生命周期和协调机制**上有根本性差异：
+
+```text
+┌── Subagent 模式 ──────────────────┐    ┌── Agent Teams 模式 ─────────────────┐
+│                                    │    │                                      │
+│   ┌──────────┐                    │    │   ┌──────────┐                      │
+│   │ 主 Agent  │                    │    │   │Team Lead │                      │
+│   └────┬─────┘                    │    │   └────┬─────┘                      │
+│        │ spawn                     │    │        │ spawn (独立CLI进程)         │
+│   ┌────┼────┐                     │    │   ┌────┼────┐                      │
+│   ▼    ▼    ▼                     │    │   ▼    ▼    ▼                      │
+│  [SA] [SB] [SC]                   │    │  [TA] [TB] [TC]                    │
+│   │    │    │                     │    │   │    ▲    │                      │
+│   └────┼────┘ 只能回报给主Agent    │    │   └────┼────┘ 可直接互相通信        │
+│        ▼                          │    │   ◄────┘                            │
+│   结果返回主上下文                  │    │   邮箱系统 + 共享任务列表            │
+└────────────────────────────────────┘    └──────────────────────────────────────┘
+```
+
+|                      | Subagent（子代理）                                                            | Agent Teams（团队）                                                         |
+| -------------------- | ----------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| **进程模型**   | 在主 Agent 会话**内部**运行（同进程或受控子进程），结果返回调用者上下文 | 每个 Teammate 是**独立的 `claude` CLI 进程**，完全自治              |
+| **上下文窗口** | 有自己的上下文窗口，但结果会**汇总回主 Agent**上下文                    | 完全独立——每个 Teammate 独占约 100 万 token 上下文窗口                    |
+| **通信拓扑**   | 星形——子 Agent**只能**向主 Agent 报告，不能互相通信                   | 网状——Teammate 间通过**Mailbox 直接通信**，不需要经过 Lead          |
+| **协调机制**   | 主 Agent 统一管理所有 Subagent 的生命周期和任务分配                           | **共享任务列表** + Teammate **自主认领** + 文件锁防竞态         |
+| **上下文继承** | 不继承父 Agent 对话历史，但结果返回父上下文                                   | 不继承 Lead 对话历史，结果**不返回** Lead 上下文                      |
+| **嵌套能力**   | Subagent**不能** spawn 子 Subagent                                      | Teammate**不能**创建嵌套团队，但 Teammate 内可用 Subagent             |
+| **持久状态**   | 无（任务完成后上下文即丢弃）                                                  | 有（任务列表、邮箱消息持久化在文件系统中）                                  |
+| **Token 成本** | 较低——结果摘要返回主上下文                                                  | 较高——每个 Teammate 独立消耗 token，约**7× 标准会话**（plan mode） |
+| **可编程性**   | ✅ SDK 完全可编程（`AgentDefinition` + `Agent` 工具）                     | ❌ 仅 CLI 自然语言交互                                                      |
+| **适用场景**   | 聚焦型任务（只关心结果）、CI/CD 自动化、生产环境                              | 探索性任务（需要讨论和协作）、CLI 交互式研发                                |
+
+**核心洞察**：Subagent 是"fire-and-forget"模式——派发任务、等待结果、继续主流程。Agent Teams 是"collaborate-and-converge"模式——团队成员自主工作、互相挑战、共同收敛到结论。选择哪种取决于任务是否需要 Agent 间的**信息交换和对抗性思维**。
+
+#### 2.9.6 会话管理与生命周期
+
+**团队创建流程**：
+
+1. 用户在 CLI 中描述任务和团队结构（自然语言）
+2. Lead 创建团队配置（`config.json`）和任务目录
+3. Lead 通过 `Task` 工具 spawn Teammate 进程，注入环境变量和 spawn prompt
+4. 每个 Teammate 加载项目上下文（`CLAUDE.md`、MCP servers、skills）并开始工作
+5. Teammate 从共享任务列表中认领任务，通过邮箱系统协调
+6. 完成后 Teammate 发送 `idle_notification`，等待新任务或关闭指令
+
+**权限继承**：Teammate 启动时继承 Lead 的权限设置。如果 Lead 使用 `--dangerously-skip-permissions`，所有 Teammate 也会如此。spawn 后可以单独修改 Teammate 权限，但不能在 spawn 时设置差异化权限。
+
+**优雅关闭协议**：
+
+1. Lead 向 Teammate 发送 `shutdown_request`
+2. Teammate 可以 approve（退出）或 reject（给出理由继续工作）
+3. 清理时 Lead 执行 `TeamDelete` 删除团队目录；如果仍有活跃 Teammate，清理会失败
+4. 必须通过 Lead 执行清理——Teammate 不应自行清理，否则可能导致团队上下文不一致
+
+**计划审批工作流**（可选）：对于复杂或高风险任务，可要求 Teammate 先提交计划再执行。Teammate 在只读 plan mode 工作直到 Lead 批准：
+
+```text
+Spawn an architect teammate to refactor the authentication module.
+Require plan approval before they make any changes.
+```
+
+Teammate 完成规划后发送 `plan_approval_request`。Lead 自主审批——approve 后 Teammate 退出 plan mode 开始实现，reject 后 Teammate 根据反馈修改并重新提交。可通过在 prompt 中设定标准来影响 Lead 的审批判断（如"只批准包含测试覆盖的计划"）。
+
+#### 2.9.7 使用方式与配置详解
+
+> **前提**：Agent Teams 需要 Claude Code v2.1.32 或更高版本（`claude --version` 检查），且必须在 **Claude Code CLI** 中使用。
+
+**Step 1 — 启用实验性功能**：
+
+```json
+// settings.json
+{
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  }
+}
+```
+
+**Step 2 — 在 CLI 中用自然语言创建团队**（注意：这是 CLI 交互，不是 SDK API 调用）：
+
+```text
+Create an agent team to review PR #142. Spawn three reviewers:
+- One focused on security implications
+- One checking performance impact
+- One validating test coverage
+Have them each review and report findings.
+```
+
+**Step 3 — 指定 Teammate 数量和模型**（可选）：
+
+```text
+Create a team with 4 teammates to refactor these modules in parallel.
+Use Sonnet for each teammate.
+```
+
+**显示模式**：支持两种显示模式——**In-process**（所有 Teammate 在主终端运行，用 `Shift+Down` 切换，任何终端都支持）和 **Split panes**（每个 Teammate 有独立面板，需要 tmux 或 iTerm2，推荐用 `tmux -CC` 配合 iTerm2）。可通过 `--teammate-mode` 参数或 `settings.json` 中的 `teammateMode` 配置：
+
+```json
+// settings.json — 强制使用 in-process 模式
+{ "teammateMode": "in-process" }
+```
+
+```bash
+# 命令行 — 单次会话覆盖
+claude --teammate-mode in-process
+```
+
+默认值 `"auto"` 会检测是否在 tmux 会话内：是则使用 split panes，否则 in-process。
+
+**与 Teammate 直接交互**：
+
+- **In-process 模式**：`Shift+Down` 切换 Teammate → 直接输入消息 → `Enter` 查看会话 → `Escape` 中断当前 turn → `Ctrl+T` 切换任务列表
+- **Split-pane 模式**：直接点击 Teammate 所在的面板进行交互
+
+**竞争性假设调查**——Agent Teams 的独特场景：
+
+```text
+Users report the app exits after one message instead of staying connected.
+Spawn 5 agent teammates to investigate different hypotheses.
+Have them talk to each other to try to disprove each other's theories,
+like a scientific debate. Update the findings doc with whatever consensus emerges.
+```
+
+这个场景的关键价值：单个 Agent 倾向于找到一个看似合理的解释就停止调查（锚定偏见）。多个独立调查者主动互相反驳，能存活下来的理论更可能是真正的根因。
+
+**Hooks 质量门控**：Agent Teams 还支持通过 Hooks 实施质量控制——`TeammateIdle`（Teammate 空闲时触发，exit code 2 可发送反馈让其继续工作）和 `TaskCompleted`（任务标记完成时触发，exit code 2 可阻止完成并发送反馈）。Hook 处理器可以是 shell 命令、单轮 LLM prompt 或多轮 subagent（最多 50 turns）。
+
+#### 2.9.8 为什么只在 CLI 可用？SDK 为何暂不支持？
+
+这是一个经常被问到的问题。根据对官方文档和社区讨论的分析，原因涉及多个层面：
+
+**1. 架构耦合——文件系统依赖**。Agent Teams 的协调完全基于本地文件系统（`~/.claude/` 目录下的 JSON 文件、文件锁），这意味着所有 Teammate 必须运行在**同一台机器**上。SDK 的典型使用场景（云端部署、无服务器函数、CI/CD 流水线）通常不满足这个前提。
+
+**2. 交互模式差异**。Agent Teams 的核心交互模式是"人在回路"（human-in-the-loop）——用户需要监控 Teammate 进展、直接与 Teammate 对话、审批计划、重定向方法。这是 CLI 终端的自然交互范式，但与 SDK 的 headless/programmatic 使用模式（如 `query()` API 返回流式结果）根本不同。
+
+**3. 实验性质**。官方明确标注 Agent Teams 为实验性功能（需手动启用 `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`），存在多个已知限制（session 恢复、任务状态延迟、关闭速度等）。在这些问题解决之前，将其暴露为 SDK API 会导致更大的稳定性风险。
+
+**4. SDK 已有替代方案**。SDK 通过 `AgentDefinition` 和 `Agent` 工具提供了 **Subagent 模式**——一种更可控的父子委派机制。对于 SDK 的典型场景（生产环境自动化、CI/CD），Subagent 模式通常足够且更可靠。
+
+**SDK 中的替代方案：Subagent 编程模式**
+
+| 维度                   | Agent Teams（CLI 专属） | Subagent（SDK 可编程）                |
+| ---------------------- | ----------------------- | ------------------------------------- |
+| **调用方式**     | CLI 自然语言指令        | `query()` API + `AgentDefinition` |
+| **Agent 间通信** | 直接通信（Mailbox）     | 仅向父 Agent 返回结果                 |
+| **协调机制**     | 共享任务列表 + 自主认领 | 父 Agent 统一管理                     |
+| **是否可编程**   | ❌ 不可通过代码创建     | ✅ 完全可编程                         |
+| **适用场景**     | CLI 交互式复杂任务      | 生产环境自动化、CI/CD                 |
+
+SDK Subagent 代码示例：
+
+```python
+import asyncio
+from claude_agent_sdk import query, ClaudeAgentOptions, AgentDefinition
+
+async def main():
+    async for message in query(
+        prompt="Use the code-reviewer agent to review this codebase",
+        options=ClaudeAgentOptions(
+            allowed_tools=["Read", "Glob", "Grep", "Agent"],
+            agents={
+                "code-reviewer": AgentDefinition(
+                    description="Expert code reviewer for quality and security reviews.",
+                    prompt="Analyze code quality and suggest improvements.",
+                    tools=["Read", "Glob", "Grep"],
+                )
+            },
+        ),
+    ):
+        if hasattr(message, "result"):
+            print(message.result)
+
+asyncio.run(main())
+```
+
+> **注意**：Subagent 不能生成自己的 Subagent（不支持嵌套），不要在 Subagent 的 `tools` 中包含 `Agent`。每个 Subagent 有独立上下文窗口，不继承父 Agent 的对话历史，但会加载项目级 `CLAUDE.md`。
+
+#### 2.9.9 Subagent（`.claude/agents/`）配置文件详解
+
+虽然 Agent Teams 通过自然语言在 CLI 中创建，但 **Subagent 配置文件**（Agent Teams 中的 Teammate 也基于同样的基础设施）遵循明确的格式规范。配置文件存储在 `.claude/agents/` 目录下，使用 **Markdown + YAML Frontmatter** 格式：
+
+```markdown
+---
+name: security-reviewer
+description: Reviews code for security vulnerabilities. Use proactively after code changes.
+tools: Read, Grep, Glob, Bash
+model: sonnet
+permissionMode: dontAsk
+maxTurns: 50
+memory: project
+background: false
+isolation: worktree
+---
+
+You are a senior security reviewer. When invoked:
+1. Run git diff to see recent changes
+2. Focus on modified files for security issues
+3. Check for: exposed secrets, SQL injection, XSS, CSRF, auth bypasses
+
+Provide feedback organized by severity:
+- Critical (must fix before merge)
+- Warning (should fix)
+- Info (consider improving)
+```
+
+**YAML Frontmatter 字段完整参考**：
+
+| 字段                | 必填 | 类型        | 说明                                                                                                       |
+| ------------------- | ---- | ----------- | ---------------------------------------------------------------------------------------------------------- |
+| `name`            | ✅   | string      | 唯一标识符，小写字母 + 连字符                                                                              |
+| `description`     | ✅   | string      | Claude 何时应委派给此 Agent 的描述（关键——Claude 据此自动委派）                                          |
+| `tools`           | ❌   | string/list | 允许使用的工具（白名单）。省略则继承所有工具。支持 `Agent(worker, researcher)` 语法限制可 spawn 的子类型 |
+| `disallowedTools` | ❌   | string/list | 禁用的工具（黑名单），从继承列表中移除                                                                     |
+| `model`           | ❌   | string      | 模型选择：`sonnet`、`opus`、`haiku`、完整模型 ID（如 `claude-opus-4-6`）或 `inherit`（默认）     |
+| `permissionMode`  | ❌   | string      | 权限模式：`default`、`acceptEdits`、`dontAsk`、`bypassPermissions`、`plan`                       |
+| `maxTurns`        | ❌   | number      | 最大 agentic turns 数                                                                                      |
+| `skills`          | ❌   | list        | 启动时预加载到上下文的 Skills（完整内容注入，不只是引用）                                                  |
+| `mcpServers`      | ❌   | list        | 可用的 MCP 服务器——内联定义或引用已配置的服务器名                                                        |
+| `hooks`           | ❌   | object      | 生命周期 Hook（`PreToolUse`、`PostToolUse`、`Stop` 等）                                              |
+| `memory`          | ❌   | string      | 持久记忆范围：`user`（`~/.claude/agent-memory/`）、`project`（`.claude/agent-memory/`）、`local` |
+| `background`      | ❌   | boolean     | 是否总是作为后台任务运行（默认 `false`）                                                                 |
+| `effort`          | ❌   | string      | 努力级别：`low`、`medium`、`high`、`max`（仅 Opus 4.6）                                            |
+| `isolation`       | ❌   | string      | 设为 `worktree` 则在临时 git worktree 中运行，提供仓库隔离副本                                           |
+
+**配置文件的作用域与优先级**（从高到低）：
+
+| 位置                       | 作用域        | 优先级    | 创建方式                                 |
+| -------------------------- | ------------- | --------- | ---------------------------------------- |
+| `--agents` CLI 标志      | 当前会话      | 1（最高） | 启动时传入 JSON                          |
+| `.claude/agents/`        | 当前项目      | 2         | 交互式或手动创建，可 check in 到版本控制 |
+| `~/.claude/agents/`      | 所有项目      | 3         | 交互式或手动创建                         |
+| Plugin 的 `agents/` 目录 | Plugin 启用处 | 4（最低） | 随 Plugin 安装                           |
+
+通过 CLI JSON 快速创建临时 Agent 的示例：
+
+```bash
+claude --agents '{
+  "code-reviewer": {
+    "description": "Expert code reviewer. Use proactively after code changes.",
+    "prompt": "You are a senior code reviewer. Focus on code quality, security, and best practices.",
+    "tools": ["Read", "Grep", "Glob", "Bash"],
+    "model": "sonnet"
+  },
+  "debugger": {
+    "description": "Debugging specialist for errors and test failures.",
+    "prompt": "You are an expert debugger. Analyze errors, identify root causes, and provide fixes."
+  }
+}'
+```
+
+#### 2.9.10 核心优势、限制与最佳实践
+
+**核心优势**：
+
+- **真正的并行探索**：避免单 Agent 的锚定偏见——多个独立 Agent 从不同角度同时探索
+- **对抗性思维**：Teammate 互相质疑和反驳，结论更可靠（科学辩论模式）
+- **上下文窗口扩展**：每个 Teammate 独立拥有约 100 万 token 上下文，突破单 Agent 上下文瓶颈
+- **自主协调**：共享任务列表 + 自主认领机制，不需要所有事情经过 Team Lead
+- **灵活交互**：用户可随时直接与任意 Teammate 交互，重定向其工作方向
+
+**经典案例**：Anthropic 用多个 Agent 并行编写了一个基于 Rust 的 C 编译器，能编译足够多的 C 代码以支持 Linux 内核构建，整个过程经历了大量 Claude Code 会话。该案例展示了 Agent Teams 在大规模并行软件工程任务中的潜力（具体数字以 Anthropic 官方发布信息为准）。
+
+**已知限制**（据[官方文档](https://code.claude.com/docs/en/agent-teams#limitations)）：
+
+1. **实验阶段**：需手动启用环境变量，API 可能变化
+2. **仅限 CLI**：SDK 无对应 API，不能编程调用
+3. **无 Session 恢复**：`/resume` 和 `/rewind` 不会恢复 in-process Teammate
+4. **任务状态延迟**：Teammate 有时未及时标记任务完成，阻塞依赖任务
+5. **关闭较慢**：Teammate 需完成当前请求或工具调用才能退出
+6. **每 Session 一个团队**：清理当前团队后才能创建新团队
+7. **无嵌套团队**：Teammate 不能创建自己的 Team 或 Teammate（Lead 专属能力）
+8. **Lead 固定**：创建团队的 Session 是永久 Lead，不可转让
+9. **权限 spawn-time 设置**：所有 Teammate 继承 Lead 权限，spawn 后可改但不能预设差异化权限
+10. **Split pane 限制**：不支持 VS Code 集成终端、Windows Terminal 和 Ghostty
+
+**最佳实践**（据[官方文档](https://code.claude.com/docs/en/agent-teams#best-practices)综合社区经验）：
+
+- **给 Teammate 充足的上下文**：不继承 Lead 的对话历史——在 spawn prompt 中包含所有必要的任务细节
+- **团队规模 3-5 人**：每个 Teammate 分配 5-6 个任务较合适，超过此数量收益递减
+- **以文件级划分任务边界**：避免两个 Teammate 编辑同一文件导致覆盖
+- **精心维护 `CLAUDE.md`**：所有 Teammate 自动加载，是全团队上下文共享的关键手段
+- **从研究和审查入手**：有明确边界、不需要写代码的任务最适合新手入门
+- **主动监控和引导**：定期检查 Teammate 进展，及时重定向偏离方向的方法
+- **让 Lead 等待**：Lead 有时会自己开始实现任务而不等 Teammate——明确指令 "Wait for your teammates to complete their tasks before proceeding"
+
+#### 2.9.11 成本考量
+
+Agent Teams 是"用钱换时间和质量"——token 使用量随活跃 Teammate 数量**线性增长**。据逆向分析，在 plan mode 下 Agent Teams 约消耗**标准会话 7 倍**的 token。
+
+| 团队规模     | 大致 Token 倍率 | 适用场景                 |
+| ------------ | --------------- | ------------------------ |
+| 1（无 Team） | 1×             | 简单/常规任务            |
+| 3 Teammates  | ~3-4×          | 并行代码审查、模块开发   |
+| 5 Teammates  | ~5-7×          | 竞争性假设调试、跨层协调 |
+
+适合高价值、高复杂度的任务（如并行代码审查、竞争性假设调试、独立模块开发）；简单任务用单 Agent 或 Subagent 更经济。
+
+> **参考资料**：
+>
+> - [Agent Teams 官方文档](https://code.claude.com/docs/en/agent-teams) | [Sub-agents 官方文档](https://code.claude.com/docs/en/sub-agents)
+> - [Reverse-Engineering Claude Code Agent Teams: Architecture and Protocol](https://dev.to/nwyin/reverse-engineering-claude-code-agent-teams-architecture-and-protocol-o49)
+> - [Building Agent Teams in OpenCode: Architecture of Multi-Agent Coordination](https://dev.to/uenyioha/porting-claude-codes-agent-teams-to-opencode-4hol)
+> - [Claude Subagents vs. Agent Teams (Daily Dose of DS)](https://blog.dailydoseofds.com/p/claude-subagents-vs-agent-teams)
+> - [Sub-agent vs. Agent Team: Pick the Right Pattern](https://medium.com/data-science-collective/sub-agent-vs-agent-team-in-claude-code-pick-the-right-pattern-in-60-seconds-e856e5b4e5cc)
+> - [Agent SDK Overview](https://platform.claude.com/docs/en/agent-sdk/overview)
+
+## 第三部分：Claude Agent SDK 实践指南
+
+### 3.1 定位与核心理念
+
+> 参考：[Agent SDK Overview](https://platform.claude.com/docs/en/agent-sdk/overview) | [Python SDK Reference](https://platform.claude.com/docs/en/agent-sdk/python) | [Quickstart 指南](https://platform.claude.com/docs/en/agent-sdk/quickstart)
+
+Claude Agent SDK（原 Claude Code SDK，2025年更名）将 Claude Code 的完整 Agent 运行时以库的形式提供给开发者。它**不是**对 Anthropic Messages API 的简单封装，而是一个内置工具执行、上下文管理和权限控制的**完整 Agent 运行时**。支持 Python 和 TypeScript 双语言。
+
+```bash
+# 安装
+pip install claude-agent-sdk          # Python（需要 Python 3.9+）
+npm install @anthropic-ai/claude-agent-sdk  # TypeScript（需要 Node.js）
+```
+
+> **注意**：SDK 底层依赖 Claude Code CLI。执行 `pip install claude-agent-sdk` 会自动将 CLI 作为依赖安装，无需手动单独安装；SDK 在运行时通过内部调用 CLI 驱动 Agent 循环。详见 [Agent Loop 文档](https://platform.claude.com/docs/en/agent-sdk/agent-loop)。
+
+认证方式支持 Anthropic API Key、Amazon Bedrock、Google Vertex AI、Microsoft Azure AI Foundry 四种后端。
+
+**与 Anthropic Client SDK 的本质区别**：
+
+> **背景说明**：Anthropic 提供了**两套不同层级的 SDK**，初学者容易混淆。这里做一个清晰的对比。
+>
+> - **Anthropic Client SDK**（也叫 "Anthropic SDK"）：底层 API 封装库，用于直接调用 Claude 的 [Messages API](https://platform.claude.com/docs/en/api/messages)。安装方式为 `pip install anthropic`（Python）或 `npm install @anthropic-ai/sdk`（TypeScript）。它是最基础的调用方式——你发送 prompt，Claude 返回文本或工具调用请求，**但工具的执行逻辑需要你自己实现**。官方文档：[Client SDKs](https://platform.claude.com/docs/en/api/client-sdks) | GitHub：[anthropic-sdk-python](https://github.com/anthropics/anthropic-sdk-python)
+> - **Claude Agent SDK**（原 Claude Code SDK）：高层 Agent 运行时框架，**构建在 Client SDK 之上**，封装了驱动 Claude Code 的完整 agent loop、内置工具集和上下文管理能力。安装方式为 `pip install claude-agent-sdk`（Python）或 `npm install @anthropic-ai/claude-agent-sdk`（TypeScript）。你只需传入 prompt，Claude 会**自主调用工具、迭代执行、直到任务完成**。官方文档：[Agent SDK Overview](https://platform.claude.com/docs/en/agent-sdk/overview) | GitHub：[claude-agent-sdk-python](https://github.com/anthropics/claude-agent-sdk-python)
+
+| 维度                 | Anthropic Client SDK（`pip install anthropic`）                                      | Claude Agent SDK（`pip install claude-agent-sdk`）                                     |
+| -------------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| **定位**       | 底层 API 封装——直接访问[Messages API](https://platform.claude.com/docs/en/api/messages) | 完整的 Agent 运行时——内置 agent loop + 工具执行                                        |
+| **工具执行**   | 你自己实现 tool loop（手动处理 `tool_use` → 执行 → `tool_result` 循环）          | Claude 自主处理（SDK 内部自动执行工具并将结果回传）                                      |
+| **内置工具**   | 无——你需要自定义所有工具                                                             | 开箱即用：Read、Edit、Write、Bash、Glob、Grep、WebSearch 等                              |
+| **上下文管理** | 手动管理对话历史和 token 限制                                                          | 自动 compaction（上下文压缩） + Session 持久化                                           |
+| **子 Agent**   | 无——需要自行编排多个 API 调用                                                        | 原生支持[Subagent](https://platform.claude.com/docs/en/agent-sdk/subagents)，可并行委派任务 |
+| **MCP 集成**   | 无——需要自己对接 MCP 协议                                                            | 一等公民支持，可直接挂载[MCP Server](https://platform.claude.com/docs/en/agent-sdk/mcp)     |
+| **适用场景**   | 简单的 API 调用、聊天机器人、自定义 pipeline                                           | 构建自主 Agent、CI/CD 集成、复杂多步骤任务自动化                                         |
+
+**何时用哪个？**
+
+- 如果你只需要**发送 prompt 拿回回复**（如构建聊天界面、简单问答），用 **Anthropic Client SDK** 就够了（[快速上手](https://platform.claude.com/docs/en/docs/initial-setup)）
+- 如果你需要 Claude **自主执行多步骤任务**（如读文件、跑命令、修代码、搜索网页），用 **Claude Agent SDK**（[快速上手](https://platform.claude.com/docs/en/agent-sdk/quickstart)）
+
+```python
+# ═══════════════════════════════════════════════════════════
+# Anthropic Client SDK（pip install anthropic）
+# 底层 API 调用，工具循环需要你自己实现
+# 文档：https://platform.claude.com/docs/en/api/client-sdks
+# ═══════════════════════════════════════════════════════════
+from anthropic import Anthropic
+client = Anthropic()
+response = client.messages.create(
+    model="claude-sonnet-4-6-20260214",  # 请使用分享时最新的模型标识
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Hello, Claude"}]
+)
+# 如果需要工具调用，你要自己写循环：
+# while response.stop_reason == "tool_use":
+#     result = your_tool_executor(response.tool_use)
+#     response = client.messages.create(tool_result=result, **params)
+
+# ═══════════════════════════════════════════════════════════
+# Claude Agent SDK（pip install claude-agent-sdk）
+# 完整 Agent 运行时，Claude 自主调用工具直到任务完成
+# 文档：https://platform.claude.com/docs/en/agent-sdk/overview
+# ═══════════════════════════════════════════════════════════
+from claude_agent_sdk import query, ClaudeAgentOptions
+async for message in query(
+    prompt="Fix the bug in auth.py",
+    options=ClaudeAgentOptions(allowed_tools=["Read", "Edit", "Bash"]),
+):
+    print(message)  # Claude 自动读文件、找 bug、修代码、验证结果
+```
+
+### 3.2 核心 API 详解
+
+> 参考：[Python SDK Reference](https://platform.claude.com/docs/en/agent-sdk/python) | [Permissions 文档](https://platform.claude.com/docs/en/agent-sdk/permissions)
+
+#### query() 函数
+
+`query()` 是 Claude Agent SDK 的核心入口，返回 `AsyncIterator`，适合单次任务：
+
+```python
+import asyncio
+from claude_agent_sdk import query, ClaudeAgentOptions
+
+async def main():
+    async for message in query(
+        prompt="Find and fix the bug in auth.py",
+        options=ClaudeAgentOptions(
+            allowed_tools=["Read", "Edit", "Bash", "Glob", "Grep"],
+            max_turns=30,
+            max_budget_usd=1.0,
+            effort="high",           # low/medium/high/max
+            model="claude-sonnet-4-6",
+            permission_mode="acceptEdits",
+            setting_sources=["project"],  # 加载 CLAUDE.md、skills、hooks
+        ),
+    ):
+        if hasattr(message, "result"):
+            print(message.result)
+
+asyncio.run(main())
+```
+
+**ClaudeAgentOptions 关键参数**：
+
+| 参数                 | 说明                                                 |
+| -------------------- | ---------------------------------------------------- |
+| `allowed_tools`    | 自动批准的工具列表                                   |
+| `disallowed_tools` | 禁止使用的工具列表                                   |
+| `max_turns`        | 最大工具调用轮次                                     |
+| `max_budget_usd`   | 费用上限（美元）                                     |
+| `effort`           | 推理深度：low/medium/high/max                        |
+| `model`            | 指定模型（如 claude-sonnet-4-6）                     |
+| `permission_mode`  | 权限模式：default/acceptEdits/plan/bypassPermissions |
+| `setting_sources`  | 加载项目配置（CLAUDE.md 等）                         |
+| `mcp_servers`      | MCP 服务器配置                                       |
+| `hooks`            | Hook 回调配置                                        |
+| `agents`           | 子 Agent 定义                                        |
+
+#### ClaudeSDKClient 类
+
+> 参考：[Python SDK Reference](https://platform.claude.com/docs/en/agent-sdk/python)
+
+`ClaudeSDKClient` 是 Claude Agent SDK 的另一个核心 API 入口，提供**双向交互式会话**能力。与 `query()` 函数不同，它能在同一会话中保持上下文，支持多轮对话、任务中断和动态配置。
+
+```python
+import asyncio
+from claude_agent_sdk import (
+    ClaudeSDKClient, ClaudeAgentOptions,
+    AssistantMessage, TextBlock, ResultMessage,
+)
+
+async def main():
+    options = ClaudeAgentOptions(
+        allowed_tools=["Read", "Edit", "Bash"],
+        permission_mode="acceptEdits",
+    )
+
+    async with ClaudeSDKClient(options=options) as client:
+        # 第一轮对话
+        await client.query("What's the capital of France?")
+        async for msg in client.receive_response():
+            if isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, TextBlock):
+                        print(f"Claude: {block.text}")
+
+        # 第二轮 — 会话保持上下文，Claude 知道在谈论法国
+        await client.query("What's the population of that city?")
+        async for msg in client.receive_response():
+            if isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, TextBlock):
+                        print(f"Claude: {block.text}")
+
+asyncio.run(main())
+```
+
+**核心方法一览**：
+
+| 方法                      | 签名                                                       | 说明                                   |
+| ------------------------- | ---------------------------------------------------------- | -------------------------------------- |
+| `connect()`             | `async def connect(prompt?)`                             | 连接 Claude 并可选发送初始 prompt      |
+| `query()`               | `async def query(prompt, session_id="default")`          | 在当前会话中发送新请求，保持上下文     |
+| `receive_messages()`    | `async def receive_messages() -> AsyncIterator[Message]` | 接收所有消息的异步迭代器               |
+| `receive_response()`    | `async def receive_response() -> AsyncIterator[Message]` | 接收消息直到 `ResultMessage`（常用） |
+| `interrupt()`           | `async def interrupt()`                                  | 中断正在执行的任务（仅流式模式）       |
+| `set_permission_mode()` | `async def set_permission_mode(mode)`                    | 运行时切换权限模式                     |
+| `set_model()`           | `async def set_model(model)`                             | 运行时切换模型                         |
+| `add_mcp_server()`      | `async def add_mcp_server(name, config)`                 | 动态添加 MCP 服务器                    |
+| `remove_mcp_server()`   | `async def remove_mcp_server(name)`                      | 动态移除 MCP 服务器                    |
+| `disconnect()`          | `async def disconnect()`                                 | 断开连接并清理资源                     |
+
+**中断任务示例**（`query()` 不支持中断，这是 `ClaudeSDKClient` 的独有能力）：
+
+```python
+async with ClaudeSDKClient(options=options) as client:
+    await client.query("Count from 1 to 100 slowly using bash sleep")
+    await asyncio.sleep(2)
+    await client.interrupt()  # 发送中断信号
+
+    # 必须先消费被中断任务的剩余消息
+    async for msg in client.receive_response():
+        if isinstance(msg, ResultMessage):
+            print(f"中断状态: {msg.subtype}")  # → "error_during_execution"
+
+    # 再发送新任务
+    await client.query("Just say hello instead")
+    async for msg in client.receive_response():
+        print(msg)
+```
+
+> ⚠️ **注意**：`interrupt()` 发送停止信号后，消息缓冲区中已产生的消息不会被清除。必须先用 `receive_response()` 消费完被中断任务的消息（包括其 `ResultMessage`），才能读取新任务的响应。
+
+**`query()` 函数 vs `ClaudeSDKClient` 选型指南**：
+
+| 特性       | `query()` 函数               | `ClaudeSDKClient` 类                        |
+| ---------- | ------------------------------ | --------------------------------------------- |
+| 会话模式   | 每次创建新会话                 | 复用同一会话，保持上下文                      |
+| 多轮对话   | ❌ 不支持                      | ✅ 支持                                       |
+| 任务中断   | ❌ 不支持                      | ✅`interrupt()`                             |
+| 运行时配置 | ❌ 创建时固定                  | ✅`set_model()` / `set_permission_mode()` |
+| 动态 MCP   | ❌ 不支持                      | ✅`add/remove_mcp_server()`                 |
+| 连接管理   | 自动（函数调用即连接）         | 手动（`connect()` / `disconnect()`）      |
+| 适用场景   | 单次任务、CI/CD 脚本、批量处理 | 交互式应用、聊天界面、需要上下文的多步工作流  |
+
+#### 内置工具体系
+
+> 参考：[Built-in Tools](https://platform.claude.com/docs/en/agent-sdk/tools) | [Custom Tools](https://platform.claude.com/docs/en/agent-sdk/custom-tools)
+
+| 分类     | 工具                                                     | 功能                               |
+| -------- | -------------------------------------------------------- | ---------------------------------- |
+| 文件操作 | `Read`, `Edit`, `Write`                            | 读取、编辑、创建文件               |
+| 搜索     | `Glob`, `Grep`                                       | 按模式查找文件、正则搜索内容       |
+| 执行     | `Bash`                                                 | 运行 shell 命令、脚本、git 操作    |
+| Web      | `WebSearch`, `WebFetch`                              | 搜索网页、获取并解析页面           |
+| 发现     | `ToolSearch`                                           | 动态按需发现和加载工具             |
+| 编排     | `Agent`, `Skill`, `AskUserQuestion`, `TodoWrite` | 子 Agent、技能、用户交互、任务追踪 |
+
+了解了 API 接口和工具体系后，接下来深入理解驱动这一切的核心引擎——Agent Loop。
+
+### 3.3 核心架构：Agent Loop 详解
+
+> 参考：[Agent Loop 详解](https://platform.claude.com/docs/en/agent-sdk/agent-loop) | [Python SDK Reference — Message Types](https://platform.claude.com/docs/en/agent-sdk/python)
+
+Agent Loop 是 Claude Agent SDK 的心脏，与 Claude Code 使用完全相同的执行循环：
+
+```text
+┌─────────────────────────────────────────────────────────┐
+│                     Agent Loop                          │
+│                                                         │
+│  ┌──────────┐    ┌──────────────┐    ┌───────────────┐  │
+│  │ 1.接收   │───>│ 2.模型评估   │───>│ 3.工具执行    │  │
+│  │   Prompt  │    │  & 决策响应  │    │  (并行/串行)  │  │
+│  └──────────┘    └──────────────┘    └───────────────┘  │
+│       ▲                                     │           │
+│       │              ┌──────────────┐       │           │
+│       │              │ 4.结果注入   │       │           │
+│       └──────────────│   回 Claude  │<──────┘           │
+│                      └──────────────┘                   │
+│                             │                           │
+│                      ┌──────▼──────┐                    │
+│                      │ 无工具调用? │                    │
+│                      │  Yes → 结束  │                    │
+│                      │  No → 循环   │                    │
+│                      └─────────────┘                    │
+└─────────────────────────────────────────────────────────┘
+```
+
+**详细步骤**：
+
+1. **接收 Prompt**：Claude 接收用户 prompt + 系统提示 + 工具定义 + 对话历史。SDK 产出 `SystemMessage`（subtype="init"），包含 session 元数据。
+2. **评估与响应**：Claude 评估当前状态，决定下一步——可能输出文本、请求工具调用、或两者兼有。SDK 产出 `AssistantMessage`。
+3. **工具执行**：SDK 执行工具并收集结果。**只读工具**（Read、Glob、Grep）可**并行执行**；**写入工具**（Edit、Write、Bash）**串行执行**以避免冲突。Hooks 可在此阶段拦截或阻止工具调用。
+4. **结果注入**：工具结果作为 `UserMessage` 反馈给 Claude，供下一轮决策。
+5. **循环或结束**：若 Claude 的响应不包含工具调用，循环结束，SDK 产出 `ResultMessage`，包含最终文本、token 用量、费用和 session ID。
+
+**消息类型体系**：
+
+| 消息类型             | 说明                                               |
+| -------------------- | -------------------------------------------------- |
+| `SystemMessage`    | 会话生命周期事件（init、compact_boundary）         |
+| `AssistantMessage` | 每轮 Claude 响应，含文本和工具调用块               |
+| `UserMessage`      | 工具执行结果，送回 Claude                          |
+| `StreamEvent`      | 实时流式事件（文本增量、工具输入块）               |
+| `ResultMessage`    | 最终消息，含结果文本、token 用量、费用、session ID |
+
+**结果状态（ResultMessage.subtype）**：`success`（正常完成）、`error_max_turns`（达到轮次限制）、`error_max_budget_usd`（达到预算上限）、`error_during_execution`（执行中断）。
+
+### 3.4 Hooks 系统：生命周期拦截
+
+> 参考：[Hooks 文档](https://platform.claude.com/docs/en/agent-sdk/hooks)
+
+Hooks 在 Agent Loop 特定节点执行回调，运行在应用进程中（**不消耗上下文窗口**）：
+
+| Hook                   | 触发时机          | 典型用途                 |
+| ---------------------- | ----------------- | ------------------------ |
+| `PreToolUse`         | 工具执行前        | 校验输入、阻止危险命令   |
+| `PostToolUse`        | 工具返回后        | 审计输出、触发副作用     |
+| `PostToolUseFailure` | 工具执行失败后    | 错误处理、降级逻辑       |
+| `Stop`               | Agent 结束时      | 校验结果、保存会话状态   |
+| `UserPromptSubmit`   | Prompt 发送时     | 注入额外上下文           |
+| `SubagentStart/Stop` | 子 Agent 生命周期 | 追踪聚合并行任务结果     |
+| `PreCompact`         | 上下文压缩前      | 归档完整记录             |
+| `Notification`       | Agent 发出通知时  | 自定义通知渠道、日志记录 |
+| `PermissionRequest`  | 工具请求权限时    | 自定义权限审批逻辑       |
+| `SessionStart/End`   | 会话生命周期      | 初始化/清理资源          |
+
+> 完整 Hook 类型定义参见 [Python SDK Reference](https://platform.claude.com/docs/en/agent-sdk/python) 中的 `HookEvent` 类型 | [Hooks 文档](https://platform.claude.com/docs/en/agent-sdk/hooks)
+
+**示例——审计文件变更**：
+
+```python
+import asyncio
+from datetime import datetime
+from claude_agent_sdk import query, ClaudeAgentOptions, HookMatcher
+
+async def log_file_change(input_data, tool_use_id, context):
+    file_path = input_data.get("tool_input", {}).get("file_path", "unknown")
+    with open("./audit.log", "a") as f:
+        f.write(f"{datetime.now()}: modified {file_path}\n")
+    return {}
+
+async def main():
+    async for message in query(
+        prompt="Refactor utils.py to improve readability",
+        options=ClaudeAgentOptions(
+            permission_mode="acceptEdits",
+            hooks={
+                "PostToolUse": [
+                    HookMatcher(matcher="Edit|Write", hooks=[log_file_change])
+                ]
+            },
+        ),
+    ):
+        if hasattr(message, "result"):
+            print(message.result)
+
+asyncio.run(main())
+```
+
+**示例——阻止危险操作**：
+
+```python
+async def block_rm_rf(input_data, tool_use_id, context):
+    command = input_data.get("tool_input", {}).get("command", "")
+    if "rm -rf" in command:
+        return {"decision": "reject", "message": "禁止执行 rm -rf 命令"}
+    return {}  # 空返回 = 放行
+
+options = ClaudeAgentOptions(
+    hooks={
+        "PreToolUse": [
+            HookMatcher(matcher="Bash", hooks=[block_rm_rf])
+        ]
+    }
+)
+```
+
+### 3.5 MCP 集成实战
+
+> 参考：[MCP 集成文档](https://platform.claude.com/docs/en/agent-sdk/mcp) | [MCP 协议官网](https://modelcontextprotocol.io)
+
+MCP（Model Context Protocol）是 Claude Agent SDK 的一等公民特性。三种接入方式：
+
+**1. 外部进程 MCP Server**（适合使用现有 MCP 生态）：
+
+```python
+import asyncio
+from claude_agent_sdk import query, ClaudeAgentOptions
+
+async def main():
+    async for message in query(
+        prompt="Open example.com and describe what you see",
+        options=ClaudeAgentOptions(
+            mcp_servers={
+                "playwright": {
+                    "command": "npx",
+                    "args": ["@playwright/mcp@latest"]
+                }
+            }
+        ),
+    ):
+        if hasattr(message, "result"):
+            print(message.result)
+
+asyncio.run(main())
+```
+
+**2. 连接数据库**：
+
+```python
+options = ClaudeAgentOptions(
+    mcp_servers={
+        "postgres": {
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-postgres",
+                     "postgresql://user:pass@localhost/mydb"]
+        },
+        "filesystem": {
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-filesystem", "/data"]
+        }
+    }
+)
+```
+
+**3. In-process SDK MCP Server**（无子进程开销）：
+
+```python
+import aiohttp
+from claude_agent_sdk import tool, create_sdk_mcp_server
+
+@tool("get_weather", "Get current temperature for a location",
+      {"latitude": float, "longitude": float})
+async def get_weather(args):
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            f"https://api.open-meteo.com/v1/forecast?"
+            f"latitude={args['latitude']}&longitude={args['longitude']}"
+            f"&current=temperature_2m"
+        ) as response:
+            data = await response.json()
+    return {"content": [{"type": "text",
+            "text": f"Temperature: {data['current']['temperature_2m']}°C"}]}
+
+server = create_sdk_mcp_server(
+    name="my-tools", version="1.0.0", tools=[get_weather]
+)
+
+# 使用：工具命名格式 mcp__{server_name}__{tool_name}
+options = ClaudeAgentOptions(
+    mcp_servers={"tools": server},
+    allowed_tools=["mcp__tools__get_weather"]
+)
+```
+
+### 3.6 ToolSearch：按需工具发现与加载
+
+当配置了大量 MCP 工具导致工具描述占用过多上下文窗口时，ToolSearch 机制会自动激活，用 `ToolSearch` 工具替代预加载所有工具定义——又是"渐进式加载"理念的体现。
+
+> 参考：[Tool Search 工具（API 文档）](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool) | [Agent SDK Tool Search 指南](https://platform.claude.com/docs/en/agent-sdk/tool-search) | [Advanced Tool Use 工程博客](https://www.anthropic.com/engineering/advanced-tool-use)
+
+#### 为什么需要 Tool Search？
+
+工具定义对上下文窗口的消耗极为可观。一个典型的多服务配置（GitHub + Slack + Sentry + Grafana + Splunk）仅工具定义就可能占用约 **55k tokens**，而 Claude 还没开始做任何实际工作。更关键的是，当可用工具超过 **30-50 个**时，模型的工具选择准确率会显著下降。Tool Search 通过按需加载解决了这两个问题——内部测试显示，Opus 4 的工具选择准确率从 49% 提升到 74%，Opus 4.5 从 79.5% 提升到 88.1%，同时 token 消耗降低了 **85% 以上**。
+
+#### 工作机制
+
+Tool Search 激活后，工具定义不再全部注入上下文窗口。Agent 只能看到一个工具摘要列表（仅包含工具名称），当任务需要特定能力时，通过搜索发现并加载 **3-5 个最相关的工具**到上下文中。这些被发现的工具会在后续轮次中保持可用；如果对话足够长触发了上下文压缩（compact），之前发现的工具可能被移除，Agent 会在需要时重新搜索。
+
+底层 API 提供两种搜索变体：
+
+| 变体            | 类型标识                            | 查询方式                        | 说明                                                 |
+| --------------- | ----------------------------------- | ------------------------------- | ---------------------------------------------------- |
+| **Regex** | `tool_search_tool_regex_20251119` | Python `re.search()` 正则语法 | 如 `"weather"`, `"get_.*_data"`, `"(?i)slack"` |
+| **BM25**  | `tool_search_tool_bm25_20251119`  | 自然语言查询                    | 更灵活的语义匹配                                     |
+
+两种变体都会搜索工具名称、描述、参数名和参数描述。
+
+#### Claude Code / Agent SDK 中的 ToolSearch 工具参数设计
+
+在 Claude Code 和 Agent SDK 中，`ToolSearch` 被封装为一个内置工具，其参数设计如下：
+
+```json
+{
+  "name": "ToolSearch",
+  "parameters": {
+    "query": {
+      "type": "string",
+      "description": "查询字符串，支持多种语法",
+      "required": true
+    },
+    "max_results": {
+      "type": "number",
+      "description": "最大返回结果数（默认 5）",
+      "default": 5
+    }
+  }
+}
+```
+
+**查询语法（query）支持三种模式**：
+
+| 模式                    | 语法                     | 示例                        | 说明                                                           |
+| ----------------------- | ------------------------ | --------------------------- | -------------------------------------------------------------- |
+| **精确选择**      | `"select:ToolA,ToolB"` | `"select:Read,Edit,Grep"` | 按名称精确获取指定工具的完整定义                               |
+| **关键词搜索**    | 自然语言关键词           | `"notebook jupyter"`      | 模糊匹配，返回最多 `max_results` 个最佳结果                  |
+| **名称过滤+排序** | `"+keyword terms"`     | `"+slack send"`           | `+` 前缀要求名称中**必须包含**该关键词，其余词用于排序 |
+
+使用示例：
+
+```python
+# 精确加载指定工具（一次加载多个，避免多次往返）
+ToolSearch(query="select:Read,Edit,Grep", max_results=5)
+
+# 关键词搜索——发现与 "computer-use" 相关的所有工具
+ToolSearch(query="computer-use", max_results=30)
+
+# 名称过滤：要求名称包含 "slack"，按 "send" 排序
+ToolSearch(query="+slack send", max_results=10)
+```
+
+调用结果以 `<functions>` 块返回匹配工具的完整 JSONSchema 定义，格式与系统提示中的工具定义一致。一旦工具的 schema 被返回，就可以像正常工具一样直接调用。
+
+#### Deferred Tools（延迟加载工具）机制
+
+API 层面通过 `defer_loading: true` 标记哪些工具应延迟加载：
+
+```json
+{
+  "name": "get_weather",
+  "description": "Get current weather for a location",
+  "input_schema": { "type": "object", "properties": { "location": { "type": "string" } } },
+  "defer_loading": true   // 关键：标记为延迟加载
+}
+```
+
+核心要点：没有 `defer_loading` 的工具会立即加载到上下文中；标记了 `defer_loading: true` 的工具只有通过搜索发现后才会加载；Tool Search 工具本身**绝不应该**设置 `defer_loading: true`；建议将 3-5 个最常用的工具设为非延迟加载以优化性能。
+
+与 MCP 集成时，可通过 `mcp_toolset` 的 `default_config` 批量设置延迟加载，同时用 `configs` 为特定工具设置例外：
+
+```python
+tools=[
+    {"type": "tool_search_tool_regex_20251119", "name": "tool_search_tool_regex"},
+    {
+        "type": "mcp_toolset",
+        "mcp_server_name": "database-server",
+        "default_config": {"defer_loading": True},       # 默认全部延迟加载
+        "configs": {"search_events": {"defer_loading": False}},  # 高频工具例外
+    },
+]
+```
+
+#### 配置选项
+
+在 Agent SDK 中，通过环境变量 `ENABLE_TOOL_SEARCH` 控制 Tool Search 的行为：
+
+| 值                  | 行为                                                                        |
+| ------------------- | --------------------------------------------------------------------------- |
+| （未设置）/`true` | **默认行为**——Tool Search 始终开启，工具定义不加载到上下文          |
+| `auto`            | 自动模式——当所有工具定义的总 token 数超过上下文窗口的**10%** 时激活 |
+| `auto:N`          | 自定义阈值——如 `auto:5` 表示超过 5% 即激活（越低越容易激活）            |
+| `false`           | 关闭 Tool Search，所有工具定义每轮都加载到上下文                            |
+
+```python
+# Agent SDK 配置示例
+options = ClaudeAgentOptions(
+    mcp_servers={"enterprise-tools": {"type": "http", "url": "https://tools.example.com/mcp"}},
+    allowed_tools=["mcp__enterprise-tools__*"],
+    env={"ENABLE_TOOL_SEARCH": "auto:5"}  # 超过 5% 上下文时自动激活
+)
+```
+
+#### 限制
+
+Tool Search 要求 Claude Sonnet 4 或更高版本（不支持 Haiku）；工具目录最大支持 **10,000 个工具**；每次搜索返回 **3-5 个**最相关的结果。
+
+> 参考：[Tool Search 工具（API 文档）](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool) | [Agent SDK Tool Search 指南](https://platform.claude.com/docs/en/agent-sdk/tool-search) | [MCP 集成文档](https://platform.claude.com/docs/en/agent-sdk/mcp) | [Advanced Tool Use 工程博客](https://www.anthropic.com/engineering/advanced-tool-use) | [MCP 协议官网](https://modelcontextprotocol.io)
+
+### 3.7 Subagent 编排模式
+
+> 参考：[Subagents 文档](https://platform.claude.com/docs/en/agent-sdk/subagents) | [Sessions 文档](https://platform.claude.com/docs/en/agent-sdk/sessions)
+
+Subagent 是实现多 Agent 协作的核心机制。每个 Subagent **启动全新对话**（不继承父 Agent 的消息历史），只有最终响应作为工具结果返回给父 Agent。
+
+```text
+┌──────────────────────────────────┐
+│         Main Agent               │
+│  ┌─────────┐  ┌──────────────┐  │
+│  │ 分析任务 │─>│ 调用 Agent   │  │
+│  └─────────┘  │   工具       │  │
+│               └──────┬───────┘  │
+│                      │          │
+│         ┌────────────┼─────────────────┐
+│         ▼            ▼                 ▼
+│  ┌─────────────┐ ┌──────────┐ ┌──────────────┐
+│  │code-reviewer│ │test-runner│ │doc-generator │
+│  │(独立上下文) │ │(独立上下文)│ │(独立上下文)  │
+│  └──────┬──────┘ └────┬─────┘ └──────┬───────┘
+│         │             │              │
+│         ▼             ▼              ▼
+│  ┌─────────────────────────────────────────┐
+│  │       结果汇总回 Main Agent              │
+│  │  （仅返回摘要，不返回子任务完整记录）    │
+│  └─────────────────────────────────────────┘
+└──────────────────────────────────────────────┘
+```
+
+**定义和使用 Subagent**：
+
+```python
+import asyncio
+from claude_agent_sdk import query, ClaudeAgentOptions, AgentDefinition
+
+async def main():
+    async for message in query(
+        prompt="Review this project: run tests, review code quality, generate docs",
+        options=ClaudeAgentOptions(
+            allowed_tools=["Read", "Glob", "Grep", "Bash", "Agent"],
+            agents={
+                "code-reviewer": AgentDefinition(
+                    description="Expert code reviewer for quality and security.",
+                    prompt="Analyze code quality, security vulnerabilities, and suggest improvements.",
+                    tools=["Read", "Glob", "Grep"],
+                ),
+                "test-runner": AgentDefinition(
+                    description="Test execution specialist.",
+                    prompt="Run all tests and report results with failure analysis.",
+                    tools=["Bash", "Read", "Glob"],
+                ),
+                "doc-generator": AgentDefinition(
+                    description="Documentation generator.",
+                    prompt="Generate comprehensive API documentation from source code.",
+                    tools=["Read", "Glob", "Write"],
+                ),
+            },
+        ),
+    ):
+        if hasattr(message, "result"):
+            print(message.result)
+
+asyncio.run(main())
+```
+
+**Subagent 关键特性**：独立上下文（不膨胀主 Agent）、工具隔离（每个 Subagent 最小工具集）、`parent_tool_use_id` 追踪消息归属、自动上下文管理（主 Agent 仅增长摘要）。
+
+**成本优化**：主会话用 Opus 进行复杂推理，子 Agent用 Sonnet 处理聚焦任务。
+
+**重要限制**：Subagent 不能生成自己的 Subagent（不要在子 Agent的 tools 中包含 `Agent`）。
+
+### 3.8 生产实践
+
+#### Session 管理与断点续传
+
+```python
+import asyncio
+from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
+
+async def main():
+    session_id = None
+
+    # 第一次查询：捕获 session_id
+    async for message in query(
+        prompt="Read the authentication module",
+        options=ClaudeAgentOptions(allowed_tools=["Read", "Glob"]),
+    ):
+        if hasattr(message, "subtype") and message.subtype == "init":
+            session_id = message.session_id
+
+    # 断点续传：使用 session_id 恢复完整上下文
+    async for message in query(
+        prompt="Now find all places that call it",
+        options=ClaudeAgentOptions(resume=session_id),
+    ):
+        if isinstance(message, ResultMessage):
+            print(message.result)
+
+asyncio.run(main())
+```
+
+#### 自动上下文压缩（Compaction）
+
+当上下文窗口接近上限时，SDK 自动压缩对话历史——保留最近交互和关键决策，旧消息被摘要替代。可通过 CLAUDE.md 中的压缩指令自定义保留策略：
+
+```markdown
+# CLAUDE.md 中的压缩指令
+
+## Summary instructions
+When summarizing this conversation, always preserve:
+- The current task objective and acceptance criteria
+- File paths that have been read or modified
+- Test results and error messages
+- Decisions made and the reasoning behind them
+```
+
+#### 费用控制
+
+```python
+async for message in query(
+    prompt="Refactor the entire codebase",
+    options=ClaudeAgentOptions(
+        max_turns=30,          # 防止无限循环
+        max_budget_usd=5.0,    # 费用上限
+        effort="medium",       # 平衡推理深度和成本
+    ),
+):
+    if isinstance(message, ResultMessage):
+        print(f"Cost: ${message.total_cost_usd:.4f}")
+        print(f"Turns: {message.num_turns}")
+```
+
+### 3.9 完整实战案例：Coding Agent
+
+构建一个能搜索代码、修复 Bug、运行测试的完整 Coding Agent：
+
+```python
+import asyncio
+from datetime import datetime
+from claude_agent_sdk import (
+    query, ClaudeAgentOptions, AgentDefinition,
+    HookMatcher, ResultMessage, AssistantMessage
+)
+
+# === Hooks ===
+async def audit_hook(input_data, tool_use_id, context):
+    """记录所有文件修改"""
+    file_path = input_data.get("tool_input", {}).get("file_path", "unknown")
+    with open("./agent_audit.log", "a") as f:
+        f.write(f"[{datetime.now().isoformat()}] Modified: {file_path}\n")
+    return {}
+
+async def safety_hook(input_data, tool_use_id, context):
+    """阻止危险的 shell 命令"""
+    command = input_data.get("tool_input", {}).get("command", "")
+    dangerous = ["rm -rf /", "sudo", "chmod 777", "> /dev/sda"]
+    for pattern in dangerous:
+        if pattern in command:
+            return {"decision": "reject",
+                    "message": f"Blocked dangerous command: {pattern}"}
+    return {}
+
+async def main():
+    print("=== Coding Agent Starting ===")
+
+    async for message in query(
+        prompt="""
+        Please do the following:
+        1. Find all failing tests in this project
+        2. Analyze the root cause of each failure
+        3. Fix the bugs causing the failures
+        4. Re-run the tests to confirm all pass
+        5. Generate a summary of changes made
+        """,
+        options=ClaudeAgentOptions(
+            # 核心工具
+            allowed_tools=[
+                "Read", "Edit", "Write", "Bash",
+                "Glob", "Grep", "Agent"
+            ],
+            # 安全控制
+            permission_mode="acceptEdits",
+            max_turns=50,
+            max_budget_usd=3.0,
+            effort="high",
+            # 项目配置
+            setting_sources=["project"],
+            # Hooks
+            hooks={
+                "PostToolUse": [
+                    HookMatcher(matcher="Edit|Write", hooks=[audit_hook])
+                ],
+                "PreToolUse": [
+                    HookMatcher(matcher="Bash", hooks=[safety_hook])
+                ],
+            },
+            # Subagents
+            agents={
+                "test-analyzer": AgentDefinition(
+                    description="Analyzes test failures and identifies root causes.",
+                    prompt="Run tests, capture output, and analyze failure patterns.",
+                    tools=["Bash", "Read", "Grep"],
+                ),
+                "code-fixer": AgentDefinition(
+                    description="Fixes code bugs based on analysis.",
+                    prompt="Apply targeted fixes. Make minimal changes.",
+                    tools=["Read", "Edit", "Grep"],
+                ),
+            },
+            # MCP 扩展（可选）
+            mcp_servers={
+                "github": {
+                    "command": "npx",
+                    "args": ["-y", "@modelcontextprotocol/server-github"]
+                }
+            },
+        ),
+    ):
+        # 进度追踪
+        if isinstance(message, AssistantMessage):
+            for block in message.content:
+                if hasattr(block, "text") and block.text:
+                    print(f"[Progress] {block.text[:100]}...")
+
+        # 最终结果
+        if isinstance(message, ResultMessage):
+            if message.subtype == "success":
+                print(f"\n=== Done ===\n{message.result}")
+            else:
+                print(f"\n=== Stopped: {message.subtype} ===")
+            if message.total_cost_usd:
+                print(f"Total cost: ${message.total_cost_usd:.4f}")
+                print(f"Total turns: {message.num_turns}")
+
+asyncio.run(main())
+```
+
+### 3.10 与 OpenAI Agents SDK 的对比
+
+> **声明**：本节内容为基于公开信息的主观分析与编辑评论，不代表 Anthropic 官方立场。对比结论可能随两个 SDK 的版本更新而变化，建议读者参考各自最新官方文档做出判断。
+>
+> - OpenAI Agents SDK：https://openai.github.io/openai-agents-python/
+> - Claude Agent SDK：https://platform.claude.com/docs/en/agent-sdk/overview
+
+| 维度                      | OpenAI Agents SDK               | Claude Agent SDK                              |
+| ------------------------- | ------------------------------- | --------------------------------------------- |
+| **核心理念**        | 集中式、产品优先                | 去中心化、开发者优先                          |
+| **Agent模式**       | 多Agent Handoff编排             | 单Agent + 强大工具使用                        |
+| **工具集成**        | 硬编码工具定义                  | MCP运行时动态发现                             |
+| **数据控制**        | 接受OpenAI运行时                | 本地MCP Server，数据留在用户环境              |
+| **多Agent Handoff** | ✅ 原生支持                     | 需手动构建                                    |
+| **Guardrails**      | ✅ 成熟的安全系统               | 通过Hooks + Permissions实现                   |
+| **内置Tracing**     | ✅ 原生集成（OpenAI Dashboard） | 通过 Hooks 系统实现可观测性，无内置 Dashboard |
+| **MCP支持**         | 部分支持                        | ✅ 一等公民                                   |
+| **内置工具**        | 较少                            | ✅ 丰富（Read/Edit/Bash/Grep等）              |
+| **语言支持**        | Python + TypeScript             | ✅ Python + TypeScript                        |
+| **会话管理**        | 基础                            | ✅ Resume/Fork/Continue                       |
+
+**Handoff vs Subagent 的本质区别**：OpenAI Handoff 是 Agent A 将控制权**完全转移**给 Agent B，对话上下文随之转移（类似"电话转接"，支持通过 `input_filter` 定制传递内容，通过 `input_type` 携带结构化元数据）；Claude Subagent 是主Agent**委派**任务给子 Agent，子 Agent在独立上下文中工作（类似"分配任务给下属"）。Claude 的模式更适合需要上下文隔离的场景；OpenAI 的模式更适合需要复杂路由和领域专家切换的对话系统。详见第四部分 §4.2 中的 Handoff 模式详解。
+
+**多Agent协作模式对比**：
+
+```text
+OpenAI Agents SDK:   路由模式 — 谁最适合处理这个请求？→ 交接给它
+Claude Agent Teams:  团队模式 — 把大任务拆成小任务 → 并行执行 → 汇总
+AutoGen:             对话模式 — 多个 Agent 在群聊中讨论 → 达成共识
+```
+
+> **Takeaway**：Claude Agent SDK 的核心竞争力在于三点——成熟的 Agent Loop + 内置工具、MCP 开放生态、以及强大的上下文管理（Session / Compaction / Subagent 隔离）。
+
+---
+
+### 3.11 Claude Agent SDK 与 Claude Code CLI 的关系与差异
+
+> **参考**：[Agent SDK 官方文档 — Claude Code Features](https://platform.claude.com/docs/en/agent-sdk/claude-code-features)
+
+#### 底层关系
+
+Claude Agent SDK **内置了 Claude Code CLI 二进制文件**，通过子进程调用它来驱动 Agent Loop。安装 SDK 后无需单独安装 CLI：
+
+```text
+你的 Python/TypeScript 代码
+    ↓  import claude_agent_sdk
+Claude Agent SDK（内置 _bundled/claude 二进制）
+    ↓  subprocess 调用
+Claude Code CLI（bundled 版本）
+    ↓  API 调用
+Anthropic API
+```
+
+一句话关系：**SDK 是 CLI 的"无头模式"封装**——共享同一套 Agent Loop 引擎，但面向不同使用场景。
+
+#### 能力对比（基于官方文档）
+
+| 维度                                | Claude Code CLI               | Claude Agent SDK                                         |
+| ----------------------------------- | ----------------------------- | -------------------------------------------------------- |
+| **使用方式**                  | 终端交互式对话                | Python/TypeScript 编程调用                               |
+| **Agent Loop**                | ✅ 相同引擎                   | ✅ 相同引擎                                              |
+| **内置工具**                  | ✅ Read/Edit/Bash/Grep 等     | ✅ 完全相同                                              |
+| **CLAUDE.md / 项目记忆**      | ✅ 自动加载                   | 需设置 `setting_sources=["project"]` 显式启用          |
+| **Skills（技能文件）**        | ✅ 自动发现                   | 需设置 `setting_sources` + `allowedTools: ["Skill"]` |
+| **Hooks（钩子）**             | ✅`settings.json` 配置      | ✅ 文件钩子（同 CLI）+ 程序化回调函数（SDK 独有）        |
+| **MCP 服务器**                | ✅ 支持                       | ✅ 支持（`mcpServers` 参数）                           |
+| **Subagent 编排**             | 有限                          | ✅ 完整（`agents` 参数 + `AgentDefinition`）         |
+| **Agent Teams**               | ✅ CLI 专属功能               | ❌ 不支持（官方明确：CLI-only feature）                  |
+| **交互式 REPL**               | ✅                            | ❌                                                       |
+| **斜杠命令**                  | ✅`/compact`、`/clear` 等 | ❌                                                       |
+| **键盘快捷键 / UI**           | ✅                            | ❌                                                       |
+| **Auto Memory**（跨会话记忆） | ✅`~/.claude/projects/`     | ❌ CLI-only，SDK 不加载                                  |
+| **程序化权限控制**            | ❌                            | ✅`permission_mode` + `allowed_tools` + 回调         |
+| **消息流输出**                | 终端渲染                      | ✅`async for message in query(...)`                    |
+| **费用/Token 统计**           | 终端显示                      | ✅`ResultMessage.total_cost_usd`                       |
+
+#### 默认行为差异
+
+SDK 默认以**完全隔离模式**运行，不加载任何文件系统配置：
+
+```python
+# SDK 默认：不加载 CLAUDE.md、Skills、Hooks
+async for msg in query(prompt="...", options=ClaudeAgentOptions(...)):
+    ...
+
+# 要匹配 CLI 的完整行为，需显式声明：
+options = ClaudeAgentOptions(
+    setting_sources=["user", "project", "local"],  # 加载所有层级配置
+    allowed_tools=["Skill", "Read", "Edit", "Bash"],
+)
+```
+
+#### Agent Teams：唯一不可替代的 CLI 专属功能
+
+Agent Teams 允许多个 Claude Code 实例通过共享任务列表和直接消息互相协作。官方明确说明：
+
+> *"Agent teams are a CLI feature where one session acts as the team lead, coordinating work across independent teammates."*
+
+SDK 的 **Subagent** 是父子委派模式（主 Agent → 子 Agent → 结果返回）；Agent Teams 是平级协作模式（Team Lead ↔ Teammate 双向消息）。两者解决不同问题，不可相互替代。
+
+> **Takeaway**：Agent SDK 与 CLI 共享同一套引擎，核心能力等价。差异在于：CLI 多了交互界面和 Agent Teams；SDK 多了程序化控制（Hooks 回调、权限管理、消息流）。选择标准很简单——**嵌入应用用 SDK，人机交互用 CLI**。
+
+---
+
+## 第四部分：行业 Agent 设计全景
+
+### 4.1 OpenAI Codex：云端编码代理的系统工程
+
+> **注**：Codex 主要通过 ChatGPT UI 和 IDE 集成使用，目前没有独立的公开 SDK API 供开发者直接编程调用。以下分析基于 OpenAI 官方博客和技术文档中公开的架构信息。
+
+Codex 是 2025 年推出的云端自主编码系统，基于 o3 模型针对软件工程微调的 codex-1 模型。
+
+**核心架构**：
+
+- **迭代式 Agent Loop**：与 Claude Code 的 while-loop 类似，但强调云端并行执行
+- **AGENTS.md**：类似 Claude Code 的 CLAUDE.md，在仓库中放置项目特定指令
+- **提示词缓存**：由于新提示词总是旧提示词的精确前缀，可重用计算结果
+- **独立云沙箱**：每个任务在独立沙箱中运行，支持 Git worktrees 并行开发
+
+**App Server 协议**——Codex 最重要的架构创新之一：
+
+```text
+┌─────────────────────────────────────────────┐
+│              Codex Core (App Server)         │
+│  代理逻辑 │ 线程管理 │ 工具执行 │ 认证      │
+│              JSON-RPC 协议                   │
+└─────────┬───────────┬───────────┬───────────┘
+          │           │           │
+    ┌─────┴─────┐ ┌───┴───┐ ┌───┴────┐
+    │ VS Code   │ │  Web  │ │ 第三方  │
+    │ 桌面应用   │ │  界面  │ │  IDE   │
+    └───────────┘ └───────┘ └────────┘
+```
+
+**设计教训**：OpenAI 最初尝试通过 MCP 暴露 Codex，但 MCP 的语义无法承载完整的代理对话——缺乏流式进度、任务中途暂停审批、结构化代码差异等能力。最终构建了自定义 App Server 协议。这说明**通用协议在特定场景下会遇到语义瓶颈**。
+
+### 4.2 OpenAI Agents SDK：Handoff 驱动的多Agent编排
+
+> 参考：[OpenAI Agents SDK 官方文档](https://openai.github.io/openai-agents-python/) | [GitHub 仓库（Python）](https://github.com/openai/openai-agents-python) | [GitHub 仓库（TypeScript）](https://github.com/openai/openai-agents-js)
+
+从实验性的 Swarm 框架演进为生产级 SDK，核心设计哲学："足够的特性用于生产，足够简的原语用于快速上手"。最初仅提供 Python SDK（2025 年 3 月发布），后于 2025 年陆续推出 Node.js/TypeScript SDK，目前双语言均已达到生产可用状态。
+
+#### Agent 定义与 Runner
+
+```python
+from agents import Agent, ModelSettings
+
+agent = Agent(
+    name="Research Assistant",
+    instructions="You are a helpful research assistant. Always cite sources.",
+    model="gpt-4.1",
+    model_settings=ModelSettings(temperature=0.7, top_p=0.9),
+    tools=[web_search_tool, file_reader_tool],
+    handoffs=[specialist_agent],
+    output_type=ResearchReport,  # Pydantic 模型，强制结构化输出
+)
+```
+
+Runner 负责执行 Agent，其内部循环如下：
+
+```text
+┌──────────────────────────────────────────────┐
+│               Runner Loop                     │
+│                                              │
+│  ┌─────────┐    ┌──────────────┐             │
+│  │ 输入    │───>│ 调用 LLM     │             │
+│  │ Message  │    │ (+ tools +   │             │
+│  │         │    │  handoffs)   │             │
+│  └─────────┘    └──────┬───────┘             │
+│                        │                     │
+│              ┌─────────▼─────────┐           │
+│              │  响应类型判断      │           │
+│              └─────────┬─────────┘           │
+│                        │                     │
+│         ┌──────────────┼──────────────┐      │
+│         ▼              ▼              ▼      │
+│  ┌──────────┐  ┌────────────┐  ┌──────────┐ │
+│  │ 文本输出 │  │ Tool Call  │  │ Handoff  │ │
+│  │ → 结束   │  │ → 执行工具 │  │ → 切换   │ │
+│  │          │  │ → 继续循环 │  │   Agent  │ │
+│  └──────────┘  └────────────┘  └──────────┘ │
+└──────────────────────────────────────────────┘
+```
+
+#### 工具系统
+
+三种工具形式：
+
+**函数工具**（自动从 Python 函数生成 schema）：
+
+```python
+from agents import Agent, function_tool
+
+@function_tool
+def get_weather(city: str, unit: str = "celsius") -> str:
+    """Get the current weather for a city.
+
+    Args:
+        city: The city name
+        unit: Temperature unit (celsius or fahrenheit)
+    """
+    return f"The weather in {city} is 22°{unit[0].upper()}"
+
+agent = Agent(name="Weather Bot", tools=[get_weather])
+```
+
+**Hosted 工具**（OpenAI 托管的 WebSearch、FileSearch、CodeInterpreter）和 **MCP 工具**（通过 MCPServerStdio 集成）。
+
+#### Handoff 模式详解
+
+> 📖 **参考文档**：[OpenAI Agents SDK — Handoffs](https://openai.github.io/openai-agents-python/handoffs/) | [API 参考](https://openai.github.io/openai-agents-python/ref/handoffs/) | [示例代码](https://github.com/openai/openai-agents-python/tree/main/examples/handoffs)
+
+Handoff 是 OpenAI Agents SDK 最核心的多 Agent 协作机制。概念上，它允许一个智能体将整个**对话控制权移交**给另一个更专业的智能体，类似于客服场景中"转接专员"的操作。技术上，Handoff 被实现为一种**特殊的工具（Tool）**——LLM 看到的是一个名为 `transfer_to_<agent_name>` 的可调用函数，当 LLM 决定调用它时，Runner 会将执行控制权切换到目标智能体。
+
+**基本用法——两种创建方式**：
+
+创建 Handoff 有两种方式：直接传入 Agent 实例（使用默认配置），或使用 `handoff()` 工厂函数进行定制：
+
+```python
+from agents import Agent, handoff
+
+billing_agent = Agent(name="Billing agent", instructions="处理账单相关问题")
+refund_agent = Agent(name="Refund agent", instructions="处理退款流程")
+
+# 方式一：直接传入 Agent（使用默认配置）
+# 方式二：使用 handoff() 函数定制行为
+triage_agent = Agent(
+    name="Triage agent",
+    instructions="根据用户问题路由到合适的专家",
+    handoffs=[billing_agent, handoff(refund_agent)]
+)
+```
+
+当 `triage_agent` 运行时，LLM 会看到两个可用工具：`transfer_to_billing_agent` 和 `transfer_to_refund_agent`。
+
+**`handoff()` 工厂函数参数详解**：
+
+| 参数                          | 类型                   | 说明                                                |
+| ----------------------------- | ---------------------- | --------------------------------------------------- |
+| `agent`                     | `Agent`              | **必填**，目标智能体实例                      |
+| `tool_name_override`        | `str`                | 自定义工具名称（默认 `transfer_to_<agent_name>`） |
+| `tool_description_override` | `str`                | 自定义工具描述，帮助 LLM 理解何时使用               |
+| `on_handoff`                | `callable`           | 移交发生时的回调函数，可用于日志记录、状态更新等    |
+| `input_type`                | `Pydantic BaseModel` | 定义移交时 LLM 需提供的结构化参数（如原因、优先级） |
+| `input_filter`              | `HandoffInputFilter` | 过滤传递给下一个智能体的对话历史                    |
+| `is_enabled`                | `bool \| callable`    | 控制该 Handoff 是否可用，支持动态判断               |
+| `nest_handoff_history`      | `bool`               | 是否折叠历史记录（覆盖 RunConfig 级别设置）         |
+
+**Handoff 携带结构化数据（input_type）**：
+
+通过 `input_type`，LLM 在移交时可以传递结构化元数据，而非仅仅切换控制权：
+
+```python
+from pydantic import BaseModel
+from agents import Agent, handoff, RunContextWrapper
+
+class EscalationData(BaseModel):
+    reason: str       # 升级原因
+    priority: str     # 优先级
+
+async def on_handoff(ctx: RunContextWrapper[None], input_data: EscalationData):
+    print(f"升级原因: {input_data.reason}, 优先级: {input_data.priority}")
+    # 可在此处记录日志、发送通知等
+
+escalation_handoff = handoff(
+    agent=Agent(name="Escalation agent", instructions="处理升级问题"),
+    on_handoff=on_handoff,
+    input_type=EscalationData
+)
+```
+
+这使得 LLM 生成的元数据（原因、摘要、优先级）与对话历史分离，便于下游处理。
+
+**输入过滤器（Input Filter）**：
+
+`input_filter` 允许控制接收智能体看到的对话历史，接收 `HandoffInputData` 并返回修改后的版本：
+
+```python
+# HandoffInputData 包含以下字段：
+# - input_history:    Runner.run() 调用前的对话历史
+# - pre_handoff_items: 触发 handoff 之前的对话项
+# - new_items:        当前轮次生成的项（包括 handoff 调用本身）
+# - run_context:      当前活跃的 RunContextWrapper
+```
+
+SDK 在 `agents.extensions.handoff_filters` 中提供了内置过滤器，例如 `remove_all_tools`（移除历史中的所有工具调用记录）。当同时定义了 per-handoff 和 `RunConfig.handoff_input_filter` 时，**per-handoff 的 `input_filter` 优先**。
+
+**嵌套移交历史（Nested Handoffs，Beta）**：
+
+通过 `RunConfig.nest_handoff_history` 启用（默认关闭），Runner 会将之前的对话折叠为一条 `<CONVERSATION HISTORY>` 摘要消息，避免多次移交后上下文过度膨胀。可通过 `RunConfig.handoff_history_mapper` 自定义摘要生成逻辑。
+
+**推荐提示词前缀**：
+
+SDK 提供了预构建的提示词前缀，帮助 LLM 更好地理解 Handoff 机制：
+
+```python
+from agents import Agent
+from agents.extensions.handoff_prompt import RECOMMENDED_PROMPT_PREFIX
+
+billing_agent = Agent(
+    name="Billing agent",
+    instructions=f"""{RECOMMENDED_PROMPT_PREFIX}
+    你是账单专家，负责处理所有账单和付款相关问题。""",
+)
+# 或使用 prompt_with_handoff_instructions() 自动注入
+```
+
+**完整的客服 Triage 示例**：
+
+```python
+from agents import Agent, Runner, handoff
+import asyncio
+
+billing_agent = Agent(
+    name="Billing Agent",
+    instructions="You are a billing specialist. Help with invoices, payments, subscriptions.",
+    tools=[get_invoice, process_payment],
+)
+
+refund_agent = Agent(
+    name="Refund Agent",
+    instructions="You are a refund specialist. Handle refund requests and returns.",
+    tools=[check_refund_eligibility, process_refund],
+)
+
+tech_support_agent = Agent(
+    name="Tech Support Agent",
+    instructions="You are a technical support specialist.",
+    tools=[check_system_status, restart_service],
+)
+
+# Handoff 回调（可选，用于数据预加载）
+async def on_handoff_to_billing(context):
+    customer_id = context.get("customer_id")
+    return {"billing_history": fetch_billing_history(customer_id)}
+
+# Triage Agent（路由入口）
+triage_agent = Agent(
+    name="Triage Agent",
+    instructions="""You are a customer service triage agent.
+    Route to the appropriate specialist:
+    - Billing/payment → Billing Agent
+    - Refund/return → Refund Agent
+    - Technical problems → Tech Support Agent""",
+    handoffs=[
+        handoff(billing_agent, on_handoff=on_handoff_to_billing),
+        refund_agent,
+        tech_support_agent,
+    ],
+)
+
+async def main():
+    result = await Runner.run(
+        triage_agent,
+        "I was charged twice for my subscription last month.",
+    )
+    print(f"Handled by: {result.last_agent.name}")
+    # 输出: Handled by: Billing Agent
+
+asyncio.run(main())
+```
+
+**两种编排模式**：
+
+```text
+管理者模式（Manager Pattern）        去中心化模式（Decentralized）
+┌────────────────┐               ┌──────┐  ┌──────┐
+│   Manager LLM  │               │Agent │←→│Agent │
+│                │               │  A   │  │  B   │
+│  ┌──┐ ┌──┐ ┌──┐│               └──┬───┘  └──┬───┘
+│  │A │ │B │ │C ││                  │         │
+│  └──┘ └──┘ └──┘│                  ↕         ↕
+└────────────────┘               ┌──────┐  ┌──────┐
+等级化委托                        │Agent │←→│Agent │
+                                 │  C   │  │  D   │
+                                 └──────┘  └──────┘
+                                 点对点协作
+```
+
+- **管理者模式**：一个中心 Triage Agent 持有所有子智能体的 handoff，根据输入分类决定转接对象
+- **去中心化模式**：每个智能体互相持有 handoff，可自主决定将对话转给谁，形成网状协作
+
+**Handoff vs 其他委托方式对比**：
+
+| 方式                 | Handoff（OpenAI SDK）            | Agents as Tools                | 子代理调用       |
+| -------------------- | -------------------------------- | ------------------------------ | ---------------- |
+| **控制权**     | 完全移交，原智能体不再参与       | 原智能体保持控制，工具返回结果 | 编排器保持控制   |
+| **对话上下文** | 可通过 input_filter 定制传递内容 | 仅传递工具调用参数             | 由编排器管理     |
+| **适用场景**   | 领域专家切换、客服转接           | 需要综合多智能体输出           | 动态子任务分解   |
+| **类比**       | "电话转接"                       | "咨询专家后自己回答"           | "分配任务给下属" |
+
+#### Guardrails 系统
+
+对智能体输入和输出的验证和安全检查：
+
+**分类**：
+
+- **输入护栏**：仅在链中第一个智能体运行
+- **输出护栏**：仅在产生最终输出的智能体运行
+- **工具护栏**：应用于 `@function_tool` 创建的函数工具
+- **全局护栏**：通过 `RunConfig` 配置，跨所有智能体应用
+
+**实现方式**：
+
+- **LLM 驱动型**：利用另一个 LLM 进行推理密集型验证（如判断越狱攻击）
+- **规则/程序型**：基于正则表达式或逻辑规则（如关键字检测、黑名单验证）
+
+**执行策略**：
+
+- **并行执行**（默认）：护栏与主智能体并发运行，速度优先
+- **阻塞执行**：护栏先完成，再启动主智能体，成本和安全优先
+
+Guardrails 与 Agent 执行**并行运行**，不增加延迟：
+
+```python
+from agents import Agent, Runner, InputGuardrail, OutputGuardrail, GuardrailFunctionOutput
+from pydantic import BaseModel
+
+class ModerationResult(BaseModel):
+    is_appropriate: bool
+    reason: str
+
+moderation_agent = Agent(
+    name="Moderation Check",
+    instructions="Check if the input is appropriate for customer service.",
+    output_type=ModerationResult,
+)
+
+async def input_moderation(ctx, agent, input_data):
+    result = await Runner.run(moderation_agent, input_data, context=ctx)
+    return GuardrailFunctionOutput(
+        output_info=result.final_output,
+        tripwire_triggered=not result.final_output.is_appropriate,
+    )
+
+# Tripwire 机制：tripwire_triggered=True 时，Runner 立即抛出异常终止执行
+main_agent = Agent(
+    name="Financial Advisor",
+    instructions="Help customers with financial planning.",
+    input_guardrails=[InputGuardrail(guardrail_function=input_moderation)],
+)
+```
+
+#### Tracing 系统
+
+内置追踪系统自动记录 Agent 运行全过程，记录 LLM 生成、工具调用、Handoff、Guardrail 检查等事件。可通过 OpenAI Dashboard 可视化调试，也支持外部后端（Langsmith、Datadog 等）。
+
+### 4.3 Google 的 Agent 生态：开放互操作
+
+Google 的 Agent 战略是构建**开放互操作的生态系统**，围绕 Gemini 模型、产品级 Agent、开发框架和互操作协议四个层次展开。
+
+#### Gemini 2.0：代理式 AI 引擎
+
+Gemini 2.0 是 Google 专为"代理式"工作流设计的多模态 AI 模型，关键能力包括：
+
+- **多模态输入输出**：支持文本、图像、音频、视频和代码的同时理解和生成
+- **代理推理与规划**：Gemini 2.0 Flash Thinking 模式针对多步逻辑推理优化，能分解问题并独立执行多步计划
+- **原生工具使用**：直接调用 Google Search、Code Execution、Google Maps 等工具，支持并行搜索
+- **长上下文理解**：长上下文窗口允许处理广泛的文档、代码库或视频文件
+
+#### Auto Browse（浏览器代理，原 Project Mariner）
+
+通过自然语言命令自动执行多步网络任务的浏览器代理：
+
+- **代理浏览**：控制浏览器导航网站、点击按钮和输入数据
+- **多步任务**：处理复杂顺序性任务（查酒店、检查机票、添加购物车）
+- **实时执行**：在 Chrome 内的 Gemini 侧边栏中实时显示进度
+- **上下文感知**：访问 Gmail、Calendar、Drive 中的信息辅助完成任务
+- **人工参与循环**：敏感步骤（购买、填充个人数据）要求用户确认
+
+#### Jules：AI 编码代理
+
+Google 的自主编程代理，定位类似 OpenAI Codex，让开发者专注于核心编码逻辑：
+
+- 自主处理辅助编码任务（bug 修复、代码重构、测试编写）
+- 支持 AI 驱动的前端开发
+- 提供 Jules Tools Reference 扩展功能
+- 支持管理编码会话和 GitHub 工作流集成
+
+#### ADK（Agent Development Kit）：开源代理开发框架
+
+Google 推出的开源、模块化框架，用于构建、管理和部署 AI 代理和多代理系统：
+
+- **多语言支持**：Python、TypeScript、Go、Java
+- **设计理念**：使代理开发感觉像传统软件开发
+- **核心抽象**：代理是能独立进行推理、规划和行动的基本执行单位
+- **LLM 后端**：Gemini 为默认引擎，同时通过 LiteLLM 支持其他模型
+
+#### A2A（Agent-to-Agent）协议：跨框架互操作标准
+
+2025 年 Google 推出的开源标准化通信框架，是 Google 对 Agent 生态最重要的贡献之一：
+
+```text
+┌──────────┐     A2A (JSON-RPC/HTTPS)     ┌──────────┐
+│ ADK Agent│ ←──────────────────────────→  │LangChain │
+│          │                               │  Agent   │
+└──────────┘                               └──────────┘
+      ↕           /.well-known/agent.json        ↕
+┌──────────┐     （代理发现机制）             ┌──────────┐
+│CrewAI    │ ←──────────────────────────→  │ 自定义   │
+│ Agent    │                               │  Agent   │
+└──────────┘                               └──────────┘
+```
+
+核心机制：
+
+- **代理发现**：通过标准化 `/.well-known/agent.json` 路径列出能力和连接详情
+- **框架无关**：跨不同平台工作（ADK、LangGraph、CrewAI 等）
+- **结构化通信**：支持同步请求/响应、异步任务和流式更新
+- **安全性**：内置认证/授权管理
+
+#### Google 代理生态整合视图
+
+```text
+Gemini 2.0（核心 AI 引擎）
+  ├── Jules（编码代理）
+  ├── Auto Browse（浏览器代理）
+  ├── ADK（开发框架）
+  └── A2A 协议（互操作标准）
+```
+
+Google 生态与 Anthropic/OpenAI 的关键差异在于：Google **更强调开放互操作**——A2A 协议不绑定自家框架，任何实现了该协议的 Agent 都可以互相通信。这与 Anthropic 的 MCP（聚焦工具连接）形成互补——MCP 解决"Agent 如何连接工具"，A2A 解决"Agent 之间如何通信"。
+
+> 参考：[Gemini 2.0 发布博客](https://blog.google/technology/google-deepmind/google-gemini-ai-update-december-2024/) | [ADK 文档](https://google.github.io/adk-docs/) | [A2A 协议](https://google.github.io/A2A)
+
+### 4.4 OpenHands：开源AI软件工程师平台
+
+OpenHands（原 OpenDevin，ICLR 2025 论文）是一个开源的自主 AI 软件工程师平台，不仅是 SDK，更是一个完整的 AI 开发环境。
+
+#### 四包模块化架构
+
+```text
+┌─────────────────────────────────────────────────────┐
+│                  OpenHands Architecture               │
+│                                                       │
+│  ┌─────────────────┐    ┌──────────────────────────┐  │
+│  │ openhands.sdk    │    │ openhands.agent_server    │  │
+│  │ (核心抽象层)     │    │ (REST/WebSocket API)      │  │
+│  │ - Agent          │    │ - 会话管理                │  │
+│  │ - Conversation   │    │ - 事件流                  │  │
+│  │ - LLM            │    │ - 远程执行                │  │
+│  │ - Tool / MCP     │    │                          │  │
+│  └────────┬─────────┘    └──────────┬───────────────┘  │
+│           │                        │                   │
+│  ┌────────▼─────────┐    ┌────────▼───────────────┐   │
+│  │ openhands.tools   │    │ openhands.workspace     │   │
+│  │ (具体工具实现)    │    │ (执行环境抽象)          │   │
+│  │ - Shell           │    │ - LocalWorkspace        │   │
+│  │ - FileOps         │    │ - DockerWorkspace       │   │
+│  │ - Browser         │    │ - RemoteWorkspace       │   │
+│  │ - IPython         │    │                         │   │
+│  └──────────────────┘    └─────────────────────────┘   │
+└─────────────────────────────────────────────────────────┘
+```
+
+#### 事件驱动的状态管理
+
+OpenHands 采用**事件溯源（Event Sourcing）** 模式，所有交互作为不可变事件追加到日志，支持确定性重放、暂停/恢复和安全性交叉检查。Agent 本身是**无状态处理器**：
+
+```python
+# 简化的 Agent Loop 伪代码
+class CodeActAgent:
+    def step(self, state: ConversationState) -> Action:
+        """根据当前状态决定下一步动作"""
+        messages = self.format_events(state.event_log)
+        response = self.llm.completion(messages)
+        action = self.parse_action(response)
+        return action  # CmdRunAction, FileEditAction, BrowseAction, etc.
+```
+
+#### LLM 后端支持
+
+通过 LiteLLM 集成支持**100+ 模型**，包含动态模型路由能力：
+
+```python
+from openhands.sdk import LLM, RouterLLM
+
+# 多模型路由
+class MultimodalRouter(RouterLLM):
+    def select_llm(self, messages: list) -> str:
+        has_images = any(m.contains_image for m in messages)
+        return "primary" if has_images else "secondary"
+
+router = MultimodalRouter(
+    llms={
+        "primary": LLM(model="anthropic/claude-sonnet-4-6"),
+        "secondary": LLM(model="deepseek/deepseek-chat"),
+    }
+)
+```
+
+#### 沙箱与安全
+
+每个会话运行在独立的 Docker 容器中，提供完整 OS 能力、资源限制和宿主机隔离。安全特性包括 `SecurityAnalyzer`（风险评级）、`ConfirmationPolicy`（高风险操作审批）、`SecretRegistry`（凭证脱敏）和 `Condenser`（上下文摘要）。
+
+#### SWE-Bench 评测表现
+
+> 数据来源：[swebench.com](https://www.swebench.com/) 排行榜，截至 2026 年 2 月。排行榜持续更新，请以官方最新数据为准。
+
+| 模型（OpenHands 平台） | SWE-Bench Verified | GAIA Benchmark  |
+| ---------------------- | ------------------ | --------------- |
+| Claude Sonnet 4.5      | **72.8%**    | **67.9%** |
+| GPT-5 (reasoning=high) | 68.8%              | 62.4%           |
+| Claude Sonnet 4        | 68.0%              | 57.6%           |
+
+### 4.5 OpenClaw：开源个人AI助手
+
+> ⚠️ **注意**：OpenClaw 项目发展迅速，以下部分信息基于 2026 年 3 月的调研，具体实现细节可能已发生变化，建议参考官方最新文档验证。
+
+OpenClaw（原 Clawdbot → Moltbot → OpenClaw）是一个免费、开源的自主 AI Agent 框架，由奥地利开发者 Peter Steinberger 创建。其核心定位与 Claude Code 或 OpenHands 不同——它不是面向开发者的编码工具，而是**个人 AI 助手**，通过 WhatsApp、Telegram、Slack、Discord 等 30+ 聊天平台与 AI 交互，让 LLM 代替你执行真实任务。
+
+截至 2026 年 3 月下旬，GitHub 上获得 **334,000+ Stars**、50,000+ Forks（数据来源：[GitHub 仓库](https://github.com/openclaw/openclaw)、[OpenClaw 官方博客](https://openclaws.io/blog/openclaw-250k-stars-milestone) 及 [startupnews.fyi 报道](https://startupnews.fyi/2026/03/24/openclaw-unveils-clawhub-marketplace-draws-more-than-331000-stars-on-github/)），超越 React 成为 GitHub 上 Stars 最多的软件项目，被称为"GitHub 历史上增长最快的项目"。
+
+#### Hub-and-Spoke 架构
+
+```text
+┌──────────────────────────────────────────────────────┐
+│                     用户消息平台                       │
+│  WhatsApp │ Telegram │ Slack │ Discord │ iMessage │ …│
+└─────────────────────┬────────────────────────────────┘
+                      │ WebSocket
+                      ▼
+            ┌─────────────────┐
+            │     Gateway     │  ← 中心控制平面
+            │  (WebSocket 服务) │
+            └────────┬────────┘
+                     │
+          ┌──────────┼──────────┐
+          ▼          ▼          ▼
+    ┌──────────┐ ┌────────┐ ┌────────┐
+    │  Agent   │ │ Canvas │ │  Cron  │
+    │ Runtime  │ │ Server │ │  Jobs  │
+    └────┬─────┘ └────────┘ └────────┘
+         │
+    ┌────┴─────────────────────┐
+    │       Agent Loop         │
+    │  Context → LLM → Tools  │
+    │     → Stream → Persist   │
+    └──────────────────────────┘
+```
+
+Gateway 是中枢，负责通道归一化（每个消息平台统一接入）、消息路由和系统状态协调。Agent Runtime 负责组装上下文、调用 LLM、执行工具调用和持久化状态。
+
+#### Skills 与 Memory 系统
+
+OpenClaw 的 **Skills 系统**与 Claude Code 的理念相似但实现不同——每个 Skill 是一个包含 `SKILL.md` 的文件夹，运行时**选择性注入**与当前对话相关的 skill，避免 prompt 膨胀。内置 100+ skills，社区有 5,400+ skills。
+
+**记忆系统**是 OpenClaw 最有特色的设计——基于纯文本 Markdown 的持久化记忆：
+
+- **每日日志** (`memory/YYYY-MM-DD.md`)：追加写入，session 启动时读取今天和昨天的日志
+- **长期记忆** (`MEMORY.md`)：经过策展的重要信息，永久保留
+- **语义搜索**：`memory_search` 工具在索引片段上进行语义召回
+
+设计哲学：文件即真相源——人类可以直接查看和编辑 agent 的记忆，简单、可审计、可版本控制。
+
+#### 定位对比
+
+```text
+专注编码 ◄──────────────────────────────► 通用自动化
+  │                                          │
+  SWE-agent  OpenHands  Claude Code     OpenClaw
+  (研究型)   (工程型)    (产品型)       (生活+工作)
+```
+
+OpenClaw 的独特价值不在于编码能力（虽然它也能执行 shell 命令和文件操作），而在于它是一个**"always-on" 的个人 AI 代理**，通过已有的聊天工具随时可达，并能跨越多天保持上下文。它是模型无关的，支持 OpenAI、Claude、Gemini、DeepSeek 和本地模型。
+
+---
+
+### 4.6 Browser Use vs Playwright MCP vs Agent Browser：三大 AI 浏览器自动化技术栈深度对比
+
+2025-2026 年，AI 浏览器自动化领域出现了三个极具代表性的开源项目，它们采用完全不同的技术路线来解决同一问题——**让 LLM 操控浏览器**。本节从技术栈、实现原理、工程设计等多个维度进行深度对比。
+
+#### 4.6.1 Browser Use：Python 全栈自主浏览器 Agent（83k+ Stars）
+
+**项目信息：** [browser-use/browser-use](https://github.com/browser-use/browser-use) | MIT 协议 | Stars 83.2k | Forks 9.7k
+
+[Browser Use](https://github.com/browser-use/browser-use) 是一个完整的端到端浏览器 Agent 框架，核心理念是让 LLM 像人一样"看懂"网页并自主操作，而非依赖传统的 CSS 选择器定位。
+
+**核心架构：**
+
+Browser Use 采用事件驱动的逐步（step-based）自主 Agent 架构，每一步包含四个阶段：上下文准备 → LLM 决策 → 动作执行 → 状态更新。
+
+技术栈组成：
+
+- **语言**：Python 3.11+（占代码库 98.4%）
+- **浏览器引擎**：Chromium（通过 Playwright 驱动）
+- **LLM 集成**：基于 LangChain 的 `BaseChatModel` 接口
+- **浏览器通信**：Chrome DevTools Protocol（CDP）
+- **并发模型**：async/await 异步模式
+- **部署方式**：本地运行 + Docker + Browser Use Cloud
+
+**页面理解方式——三路并行 CDP 提取：**
+
+Browser Use 的页面理解是其核心技术亮点，通过三个并行的 CDP 操作构建页面语义：
+
+1. **DOM 树捕获**：调用 `DOMSnapshot.captureSnapshot` 获取完整 DOM 结构，包含计算样式和绘制顺序（paint order）
+2. **无障碍树（AX Tree）**：调用 `Accessibility.getFullAXTree` 获取语义结构，支持跨 iframe 递归采集
+3. **视觉指标**：获取视口尺寸和设备像素比（DPR），用于坐标归一化
+
+在此基础上，Browser Use 还进行以下增强处理：
+
+- **元素索引**：通过 backend node ID 建立 O(1) 查找字典，支持快速父子遍历
+- **可见性判断**：综合 CSS 属性（display/visibility/opacity）、视口交叉（阈值默认 1000px）、滚动偏移等
+- **交互元素检测**：通过 JavaScript 的 `getEventListeners()` 检测事件监听器，增强静态 CSS 检测
+- **序列化**：`DOMTreeSerializer` 将增强后的 DOM 树转换为 LLM 友好的文本格式
+
+**操作执行机制：**
+
+Browser Use 的每一步可执行 1-5 个动作（可配置），执行流程如下：
+
+```text
+_prepare_context()  → 截图 + 更新页面状态 + 注入规划提示
+    ↓
+_get_next_action()  → 格式化消息 → 调用 LLM → 解析结构化输出
+    ↓
+multi_act()         → 执行 1-5 个动作 → 跟踪连续失败次数
+    ↓
+后处理              → 更新计划进度 → 检测行为循环 → 记录交互元素
+```
+
+支持的操作类型包括：导航（navigate）、点击（click by index）、输入文本（type）、截图（screenshot）、元素发现（discover elements）等。对于支持坐标点击的模型，还支持基于坐标的精确点击。
+
+**LLM 集成方式——多 LLM 协作架构：**
+
+Browser Use 的 LLM 集成通过 LangChain 的 `BaseChatModel` 抽象接口实现，支持多个 LLM 同时参与不同角色：
+
+| LLM 角色               | 职责             | 说明                         |
+| ---------------------- | ---------------- | ---------------------------- |
+| 主 LLM（Primary）      | Agent 推理与决策 | 核心决策引擎，选择下一步动作 |
+| 页面提取 LLM           | 内容分析         | 专门用于从页面提取结构化信息 |
+| 判断 LLM（Judge）      | 结果验证         | 独立评估任务完成度           |
+| 压缩 LLM（Compaction） | 上下文优化       | 压缩对话历史，节省 token     |
+
+支持的模型包括：ChatBrowserUse（官方优化模型，3-5x 更快）、Claude、GPT 系列、Gemini、Ollama 本地模型等。不同模型有不同的超时设置（Claude/Deepseek 90s，Groq 30s，默认 75s）。
+
+**状态管理——AgentState 持久化对象：**
+
+```python
+AgentState:
+  n_steps           # 步骤计数器
+  consecutive_failures  # 连续失败累计
+  last_model_output    # 最近 LLM 响应
+  last_result          # 动作执行结果
+  plan                 # 任务分解（带状态跟踪）
+  loop_detector        # 行为循环检测器
+  file_system_state    # 文件操作持久化
+```
+
+支持真实浏览器 Profile 登录态保持，Cloud 服务支持跨远程浏览器同步 Profile。
+
+**错误处理与重试——多层恢复机制：**
+
+- **重新规划**：N 次连续失败后自动触发重新规划（replan nudging）
+- **探索提示**：N 步无规划后注入探索建议
+- **循环检测**：通过 action/page state 哈希识别死循环，逐级升级干预消息
+- **预算告警**：步骤消耗达 75% 时发出预警
+- **LLM 降级**：`_try_switch_to_fallback_llm()` 实现 rate limit 或错误时自动切换备用模型
+- **强制终止**：最终步骤或最大失败次数时强制执行 done 动作
+
+**扩展性——自定义工具模式：**
+
+```python
+@tools.action(description='执行自定义操作')
+def custom_tool(param: str) -> str:
+    return result
+```
+
+通过装饰器模式注册自定义工具，扩展默认浏览器操作之外的能力。
+
+**最小代码示例：**
+
+```python
+# 注意：ChatAnthropic 从 browser_use 导入，不是 langchain
+import os
+from browser_use import Agent, Browser, BrowserProfile, ChatAnthropic
+
+browser = Browser(
+    browser_profile=BrowserProfile(
+        headless=False,       # 打开可见浏览器
+        channel="chrome",     # 使用系统 Chrome
+        highlight_elements=True,  # 高亮操作元素
+    ),
+)
+
+agent = Agent(
+    task="打开 Hacker News，告诉我排名前 3 的文章标题",
+    llm=ChatAnthropic(
+        model="claude-sonnet-4-6",
+        api_key=os.environ.get("ANTHROPIC_API_KEY"),
+    ),
+    browser=browser,
+)
+result = await agent.run()
+```
+
+**模型选择提示：** Browser Use 支持多种 LLM 后端。使用 `ChatAnthropic` 搭配 Claude 模型（如 `claude-sonnet-4-6`）是推荐方案，也可通过 `ChatOpenAI` 使用 OpenAI 模型。如需使用第三方兼容 API，可通过 `base_url` 参数指定端点。
+
+---
+
+#### 4.6.2 Playwright MCP：无障碍树驱动的 MCP 浏览器服务器
+
+**项目信息：** [microsoft/playwright-mcp](https://github.com/microsoft/playwright-mcp) | npm: [@playwright/mcp](https://www.npmjs.com/package/@playwright/mcp) | Microsoft Playwright 团队维护
+
+[Playwright MCP](https://github.com/microsoft/playwright-mcp) 是 Microsoft 官方推出的 MCP（Model Context Protocol）服务器，将 Playwright 浏览器自动化能力通过标准化的 MCP 协议暴露给 LLM。核心设计哲学是：**用无障碍树（Accessibility Tree）代替像素，让 LLM 读文本而非看图片。**
+
+**核心架构：**
+
+Playwright MCP 采用 Client-Server 模式，基于 JSON-RPC 2.0 协议通信：
+
+```text
+LLM/Agent Client ←→ [JSON-RPC 2.0] ←→ Playwright MCP Server ←→ [Playwright API] ←→ Browser
+                   (STDIO / HTTP+SSE)
+```
+
+技术栈组成：
+
+- **语言**：TypeScript/Node.js（Node.js 18+）
+- **浏览器引擎**：Chromium、Firefox、WebKit（Playwright 多引擎支持）
+- **通信协议**：MCP over JSON-RPC 2.0
+- **传输层**：STDIO（本地 CLI）或 HTTP + Server-Sent Events（远程/网络）
+- **部署方式**：npm 包、Docker 镜像（`mcr.microsoft.com/playwright/mcp`）、Chrome 扩展
+
+**页面理解方式——无障碍快照（Accessibility Snapshot）：**
+
+这是 Playwright MCP 与 Browser Use 最根本的技术差异。Playwright MCP **不使用截图/视觉模型**，而是通过 `page.accessibility.snapshot()` 获取页面的无障碍对象模型（AOM Tree）：
+
+```text
+原始无障碍 JSON:
+{
+  role: "textbox",
+  name: "Username or email address"
+}
+{
+  role: "button",
+  name: "Sign in"
+}
+
+→ 序列化为 YAML 风格文本（专为 LLM token 效率优化）
+```
+
+这种方式的优势：
+
+- **无需视觉模型**：纯文本交互，大幅降低计算开销
+- **确定性**：避免截图方式的歧义和脆弱性
+- **Token 高效**：结构化文本远比图像编码更节省 token
+- **稳定定位**：使用语义角色/标签（屏幕阅读器可访问），而非脆弱的 XPath/像素坐标
+- **快速**：无障碍快照比完整 DOM 或截图更轻量
+
+**操作执行机制——MCP 工具调用流程：**
+
+Playwright MCP 提供 **70+ 工具**，分为 7 个能力组：
+
+**始终启用的能力（3 组）：**
+
+1. **core**（15 个工具）：导航、点击、输入、表单填充、键盘操作、拖放、快照、截图
+2. **core-tabs**：标签页创建/关闭/切换/列表
+3. **core-install**：浏览器安装和生命周期管理
+
+**可选能力（4 组，通过 `--caps` 启用）：**
+4. **vision**：坐标点击、鼠标操作（`--caps=vision`）
+5. **pdf**：页面转 PDF
+6. **testing**：元素验证、定位器生成、列表校验
+7. **tracing**：DevTools 追踪、录像、性能分析
+
+执行流程：
+
+```text
+1. LLM 生成 JSON-RPC 请求: { method: "tools/call", params: { name: "browser_click", arguments: { ref: "button-ref-12345" } } }
+2. Server 翻译为 Playwright API: page.getByRole('button', { name: 'Sign in' })
+3. Playwright 执行原子操作
+4. JSON-RPC 响应返回结果: { result: { success: true } }
+```
+
+核心工具使用频率：80% 的任务由 20% 的工具完成（navigate、snapshot、click、type、select、press_key、wait_for、handle_dialog）。
+
+**LLM 集成方式——MCP 协议标准化：**
+
+Playwright MCP 通过 MCP 协议与 LLM 集成，**不绑定特定模型**（虽然最初为 Claude 设计，但任何支持 MCP 的客户端都可使用）：
+
+```text
+启动 → npx @playwright/mcp@latest
+    ↓
+客户端连接 → 通过 JSON-RPC 获取完整工具定义
+    ↓
+LLM 获得工具描述 → 推理引擎决定调用哪个工具
+    ↓
+工具调用 → JSON-RPC → 服务端执行 → 结果返回
+    ↓
+LLM 接收结果 → 继续推理直到任务完成
+```
+
+已支持的客户端平台：Claude Desktop、Cursor IDE、VS Code、Goose、以及任何实现了 MCP 客户端协议的 Agent 平台。
+
+**状态管理——三种运行模式：**
+
+| 模式                             | 说明                                        | 适用场景             |
+| -------------------------------- | ------------------------------------------- | -------------------- |
+| **持久化 Profile（默认）** | 保持登录态、cookies、localStorage、浏览历史 | 需要认证的持续工作流 |
+| **隔离模式**               | 临时内存会话，无持久存储                    | 测试、避免状态泄漏   |
+| **浏览器扩展**             | 通过 CDP 连接已有浏览器标签                 | 利用当前登录态       |
+
+此外还有 14 个存储管理工具，涵盖 cookies、localStorage、sessionStorage 的增删改查。
+
+**错误处理：**
+
+- JSON-RPC 错误响应包含错误码和描述性消息
+- Server 捕获 Playwright 异常并转译为 MCP 错误
+- LLM 接收结构化错误信息用于推理判断
+- 内置断言机制（建议在保存状态前验证操作是否成功）
+
+**适用场景：** MCP 生态集成（Claude Desktop、IDE 插件等）、表单自动化、动态网页抓取、端到端测试、需要长时间运行和持久状态的探索性自动化。
+
+---
+
+#### 4.6.3 Agent Browser：Rust 原生高性能浏览器 CLI
+
+**项目信息：** [vercel-labs/agent-browser](https://github.com/vercel-labs/agent-browser) | Vercel Labs 维护 | npm: [agent-browser](https://www.npmjs.com/package/agent-browser) | 官网: [agent-browser.dev](https://agent-browser.dev)
+
+[Agent Browser](https://github.com/vercel-labs/agent-browser) 是 Vercel Labs 开源的纯 Rust 浏览器自动化 CLI，专为 AI Agent 设计。核心创新在于极致的 **token 效率**和 **启动性能**——用 CLI 输出代替 JSON Schema 工具定义，用无障碍树 `@ref` 标记代替 DOM 选择器。
+
+**核心架构——Client-Daemon 两层模型：**
+
+Agent Browser 是三个项目中唯一使用 Rust 实现的，采用 Client-Daemon 两层架构：
+
+```text
+Rust CLI (< 50ms 启动) → Unix Domain Socket → Rust Daemon (常驻进程) → CDP → Chromium
+```
+
+技术栈组成：
+
+- **语言**：纯 Rust（整个 daemon 用 Rust 重写，相比 Node.js 版本内存消耗降低 18x）
+- **浏览器引擎**：Chrome for Testing（Google 官方自动化专用通道）
+- **浏览器通信**：Chrome DevTools Protocol（CDP）直连
+- **进程间通信**：Unix Domain Sockets
+- **跨平台**：macOS（ARM64/x64）、Linux（ARM64/x64）、Windows x64 原生二进制
+
+关键性能数据：
+
+- CLI 启动时间：< 50ms
+- 后续命令：几乎瞬时（常驻 daemon）
+- 内存优化：比 Node.js daemon 降低 18x
+- 执行速度：Vercel 基准测试显示 3.5x 更快执行，37% token 减少
+
+**页面理解方式——带 @ref 标记的无障碍树：**
+
+Agent Browser 也使用浏览器的**无障碍树（Accessibility Tree）**——这一点与 Playwright MCP 相同。无障碍树是浏览器在 DOM 之外维护的另一棵树，专为屏幕阅读器等辅助工具设计，只包含对用户有意义的语义节点（按钮、链接、输入框、文本等），去掉所有样式、布局、隐藏元素。
+
+**但两者用无障碍树的方式存在根本差异：**
+
+- **Playwright MCP** 调用 `page.accessibility.snapshot()` 取回的是**完整 AOM 树**（全部语义节点），序列化为 YAML 格式传给 LLM，一个普通页面通常有 3,000-5,000+ tokens；元素引用使用 `role + name` 的语义组合字符串，如 `getByRole('button', { name: 'Sign in' })`——一次引用就需要多个 token
+- **Agent Browser** 的 `snapshot -i` 中 `-i` 代表 **interactive only**，只保留用户可操作的节点，过滤掉纯展示性文本和结构节点——同一页面只有 200-400 tokens；同时给每个可交互节点分配**整数 `@ref=N`**，一次引用只消耗 1-2 个 token
+
+因此两者之间 93% 的 token 差距来自**两处叠加效果**：① 可交互节点过滤（大幅减少节点数量）；② `@ref` 整数 ID 替代语义字符串（大幅压缩每次元素引用的表达成本）。此外，Playwright MCP 还有 70+ 工具的 JSON Schema 定义常驻 context，Agent Browser 作为 CLI 工具则无需任何 schema 定义开销。
+
+`@ref` 是 Agent Browser 给每个可交互元素自动分配的**唯一整数引用**。执行 `agent-browser snapshot -i` 后输出类似：
+
+```bash
+$ agent-browser snapshot -i
+# 输出带 @ref 的交互元素列表：
+# @e1 textbox "Username"
+# @e2 textbox "Password"
+# @e3 button "Sign in"
+```
+
+一个更完整的示例（以 Google 首页为例）：
+
+```text
+[heading] Google Search
+[link @ref=3] Gmail
+[link @ref=4] Images
+[textbox @ref=5] Search
+[button @ref=6] Google Search
+[button @ref=7] I'm Feeling Lucky
+```
+
+每个 `@ref=N` 就是一个可操作的锚点。之后可以用 `agent-browser click @5` 来点击搜索框，用 `agent-browser type @5 "hello"` 来输入文字。
+
+**`@ref` 机制的核心优势：**
+
+- **双重 token 压缩**：可交互节点过滤（减少节点数）+ 整数 ID 引用（减少每次操作的表达开销），相比 Playwright MCP 全量 AOM 方案节省约 **93%** token
+- **比截图+视觉识别更精准**：无障碍树是结构化文本，LLM 处理更精准也更便宜；截图方式还存在坐标偏移和视觉歧义
+- **操作极简**：LLM 不需要理解 CSS 选择器、XPath 或 `role + name` 组合——直接用 `@ref` 整数编号即可，且引用是确定性的，不会因 DOM 变化而失效
+
+元素选择支持三种方式：
+
+1. **@ref 引用**（AI 优化，推荐）：从 snapshot 获取确定性引用，`click @e3`
+2. **CSS 选择器**：标准 DOM 查询
+3. **语义定位器**：ARIA 角色、文本内容、标签、占位符、alt 文本
+
+**Token 效率对比**（Agent Browser 的核心卖点）：
+
+| 指标         | Agent Browser    | Playwright MCP        | 节省比例 |
+| ------------ | ---------------- | --------------------- | -------- |
+| 快照大小     | 200-400 tokens   | 3,000-5,000+ tokens   | ~93%     |
+| 按钮点击响应 | 6 字符（"Done"） | 数千字符              | ~99%     |
+| 10 步工作流  | ~7,000 tokens    | 50,000-114,000 tokens | 86-94%   |
+| 工具定义开销 | 0（CLI 输出）    | JSON Schema 定义      | 100%     |
+
+这意味着在相同 context 预算下，Agent Browser 可执行 **5.7x 更多测试循环**。
+
+**操作执行机制——50+ CLI 命令：**
+
+Agent Browser 提供完整的浏览器操作命令集：
+
+```bash
+# 导航
+agent-browser open https://example.com
+agent-browser go-back
+
+# 交互（使用 @ref）
+agent-browser click @e3
+agent-browser type @e1 "hello world"
+agent-browser fill @e1 "value"    # 清空后输入
+
+# 状态检查
+agent-browser snapshot -i          # 交互元素快照
+agent-browser screenshot           # 截图
+agent-browser get-text @e5         # 获取元素文本
+
+# 等待条件
+agent-browser wait --text "Success"
+agent-browser wait --url "*/dashboard"
+
+# 网络控制（完整能力）
+agent-browser mock "*/api/data" --body '{"result": "test"}'
+agent-browser block "*/analytics/*"
+agent-browser har-start             # HAR 流量录制
+
+# 批量执行（JSON 管道）
+echo '[{"cmd":"open","args":["https://example.com"]},{"cmd":"snapshot"}]' | agent-browser batch
+```
+
+**LLM 集成方式——CLI 即接口：**
+
+Agent Browser **不内置 LLM 集成**，而是将浏览器操作暴露为 CLI 命令，让任何能执行 shell 命令的 Agent 框架直接调用：
+
+```text
+LLM Agent（Claude Code / Cursor / GitHub Copilot / 自定义）
+    ↓ shell 命令
+agent-browser open <url>
+    ↓
+agent-browser snapshot -i   →  返回 @ref 标记的无障碍树（LLM 可读）
+    ↓
+LLM 推理 → 决定操作
+    ↓
+agent-browser click @e3     →  返回 "Done"（最小化 token）
+```
+
+这种设计的优势：
+
+- **零工具定义开销**：不需要 JSON Schema 工具描述占用 context
+- **确定性引用**：@ref 消除了重新查询 DOM 的需要
+- **语义对齐**：ARIA 角色和无障碍名称与 LLM 的语义理解天然契合
+- **无状态交互**：每个命令独立，LLM 不需要维护 DOM 状态
+
+**状态管理：**
+
+- **Session 隔离**：`--session` 标志创建独立浏览器实例
+- **自动保存/恢复**：`--session-name` 实现会话持久化
+- **加密存储**：AES-256-GCM 加密敏感会话数据
+- **Profile 持久化**：cookies、IndexedDB、Service Workers、缓存完整保持
+- **多标签/多窗口**：独立管理标签页、窗口和 iframe
+
+**错误处理：**
+
+- 默认 25 秒操作超时（低于 30 秒读超时，确保正确错误处理）
+- 自定义等待条件用于同步
+- 语义定位器提供回退机制（CSS/XPath 失败时通过 ARIA 角色定位）
+- 浏览器对话框自动处理（accept/dismiss）
+
+**扩展性——云提供商后端：**
+
+通过 `-p/--provider` 支持多种云提供商：Browserless、Browserbase、Browser Use（云版本）、Kernel、iOS 模拟器等。通过 `--engine` 支持不同浏览器引擎（Chrome 默认、Lightpanda）。
+
+安装方式：npm（`npm install -g agent-browser`）、Homebrew（`brew install agent-browser`）、Cargo（`cargo install agent-browser`）、或 npx 直接运行。
+
+---
+
+#### 4.6.4 三大技术栈综合对比
+
+**核心架构对比：**
+
+| 维度                   | Browser Use            | Playwright MCP            | Agent Browser             |
+| ---------------------- | ---------------------- | ------------------------- | ------------------------- |
+| **开发者**       | browser-use 社区       | Microsoft Playwright 团队 | Vercel Labs               |
+| **语言**         | Python 3.11+           | TypeScript/Node.js 18+    | Rust（纯原生）            |
+| **GitHub Stars** | 83.2k                  | —                        | —                        |
+| **许可证**       | MIT                    | —                        | —                        |
+| **浏览器引擎**   | Chromium（Playwright） | Chromium/Firefox/WebKit   | Chrome for Testing        |
+| **浏览器通信**   | CDP（通过 Playwright） | Playwright API            | CDP 直连                  |
+| **集成模式**     | Python 库（import）    | MCP Server（JSON-RPC）    | CLI（shell 命令）         |
+| **启动性能**     | 中等（Python 进程）    | 中等（Node.js 进程）      | 极快（< 50ms，Rust 原生） |
+| **内存占用**     | 较高                   | 中等                      | 极低（比 Node.js 低 18x） |
+
+**页面理解方式对比：**
+
+| 维度                   | Browser Use                    | Playwright MCP                             | Agent Browser                                             |
+| ---------------------- | ------------------------------ | ------------------------------------------ | --------------------------------------------------------- |
+| **主要方式**     | CDP 三路并行提取               | 无障碍快照（AOM Tree）                     | 无障碍树 + @ref 标记                                      |
+| **DOM 提取**     | ✅ DOMSnapshot.captureSnapshot | ❌ 不直接使用 DOM                          | ❌ 不直接使用 DOM                                         |
+| **无障碍树**     | ✅ 完整 AX Tree（全节点）      | ✅ 完整 AOM Tree → YAML，3k-5k+ tokens/页 | ✅`-i` 仅交互节点 + `@ref` 整数 ID，200-400 tokens/页 |
+| **截图/视觉**    | ✅ 支持（可选）                | ✅ 支持（--caps=vision）                   | ✅ 支持（screenshot 命令）                                |
+| **元素索引**     | backend node ID + O(1) 查找    | ref 值 + 语义角色                          | @ref 确定性引用                                           |
+| **跨 iframe**    | ✅ 递归采集所有 frame          | ✅ Playwright 内置支持                     | ✅ iframe 导航命令                                        |
+| **事件监听检测** | ✅ getEventListeners()         | ❌                                         | ❌                                                        |
+| **Token 效率**   | 中等（完整 DOM + AX）          | 中等（序列化 AOM）                         | 极高（200-400 tokens/页面）                               |
+
+**LLM 集成方式对比：**
+
+| 维度                   | Browser Use                  | Playwright MCP               | Agent Browser             |
+| ---------------------- | ---------------------------- | ---------------------------- | ------------------------- |
+| **集成方式**     | LangChain BaseChatModel      | MCP 协议（JSON-RPC 2.0）     | CLI 输出（shell 命令）    |
+| **支持模型**     | Claude/GPT/Gemini/Ollama 等  | 任何 MCP 客户端              | 任何能执行 shell 的 Agent |
+| **多 LLM 角色**  | ✅（主/提取/判断/压缩 4 个） | ❌ 单一 LLM                  | ❌ 需自行实现             |
+| **自动降级**     | ✅ 备用模型自动切换          | ❌                           | ❌                        |
+| **工具定义开销** | 中等（LangChain schema）     | 较高（70+ 工具 JSON Schema） | 零（CLI 无 schema）       |
+| **上下文效率**   | 中等                         | 较低                         | 极高（93% 节省）          |
+
+**错误处理与容错对比：**
+
+| 维度               | Browser Use                | Playwright MCP       | Agent Browser       |
+| ------------------ | -------------------------- | -------------------- | ------------------- |
+| **重试机制** | 多层（重新规划/探索/降级） | JSON-RPC 错误返回    | 操作超时 + 等待条件 |
+| **循环检测** | ✅ 行为哈希 + 逐级升级     | ❌ 依赖 LLM 自身判断 | ❌ 需自行实现       |
+| **预算控制** | ✅ 步骤预算 + 75% 告警     | ❌                   | ❌                  |
+| **模型降级** | ✅ 自动切换备用 LLM        | ❌                   | ❌                  |
+| **会话加密** | ❌                         | ❌                   | ✅ AES-256-GCM      |
+
+**扩展性与生态对比：**
+
+| 维度                 | Browser Use             | Playwright MCP             | Agent Browser              |
+| -------------------- | ----------------------- | -------------------------- | -------------------------- |
+| **自定义动作** | ✅ @tools.action 装饰器 | 有限（JavaScript 评估）    | ✅ evaluate 命令           |
+| **网络控制**   | 有限                    | ✅ 请求 Mock + 路由        | ✅ 完整（Mock/Block/HAR）  |
+| **云提供商**   | Browser Use Cloud       | Docker 镜像                | Browserless/Browserbase 等 |
+| **多浏览器**   | 仅 Chromium             | ✅ Chromium/Firefox/WebKit | Chrome + Lightpanda        |
+| **批量执行**   | 逐步（1-5 动作/步）     | 逐步                       | ✅ JSON 管道批量           |
+
+**适用场景决策指南：**
+
+| 场景                                              | 推荐方案       | 理由                                                    |
+| ------------------------------------------------- | -------------- | ------------------------------------------------------- |
+| **端到端自主任务**（如"帮我订机票"）        | Browser Use    | 完整的 Agent 运行时，内置决策、重试、循环检测，开箱即用 |
+| **MCP 生态集成**（Claude Desktop/IDE 插件） | Playwright MCP | 标准 MCP 协议，与 Claude Desktop、Cursor 等无缝集成     |
+| **高性能精细控制**（如大规模测试）          | Agent Browser  | 极低 token 消耗，Rust 原生性能，5.7x 更多测试循环       |
+| **多模型切换/实验**                         | Browser Use    | 内置多 LLM 支持 + 自动降级                              |
+| **Token 预算紧张**                          | Agent Browser  | 93% context 节省，最适合 context 受限场景               |
+| **跨浏览器兼容测试**                        | Playwright MCP | 唯一支持 Firefox/WebKit 的方案                          |
+| **网络流量分析/Mock**                       | Agent Browser  | 完整的 HAR 录制 + 路由 Mock + 请求拦截                  |
+| **快速原型 + Python 生态**                  | Browser Use    | Python 库直接 import，LangChain 生态丰富                |
+| **自定义 Agent 编排**                       | Agent Browser  | CLI 接口天然适合自定义编排逻辑                          |
+
+**技术路线总结：**
+
+```text
+Browser Use   → "全包式"：Python Agent 框架 + LLM 决策引擎 + 浏览器操作，开箱即用
+Playwright MCP → "标准化"：通过 MCP 协议暴露 Playwright 能力，强调生态互通
+Agent Browser → "极简高效"：Rust CLI + @ref 无障碍树，极致 Token 效率，自行编排
+```
+
+> **行业趋势**：三个项目代表了 AI 浏览器自动化的三种技术路线——**全栈 Agent（Browser Use）**、**协议标准化（Playwright MCP）**、**极致效率（Agent Browser）**。它们共同验证了一个方向：**无障碍树/语义理解正在取代传统的 CSS 选择器定位**，成为 AI 操控浏览器的主流范式。
+
+**参考链接：**
+
+- Browser Use: [github.com/browser-use/browser-use](https://github.com/browser-use/browser-use)
+- Playwright MCP: [github.com/microsoft/playwright-mcp](https://github.com/microsoft/playwright-mcp) | [npm @playwright/mcp](https://www.npmjs.com/package/@playwright/mcp)
+- Agent Browser: [github.com/vercel-labs/agent-browser](https://github.com/vercel-labs/agent-browser) | [agent-browser.dev](https://agent-browser.dev)
+- MCP 协议: [modelcontextprotocol.io](https://modelcontextprotocol.io)
+
+### 4.7 SDK/框架横向对比表
+
+以下对比覆盖 Claude Agent SDK、OpenAI Agents SDK、OpenHands 和 Semantic Kernel 四个主要框架：
+
+#### 核心能力对比
+
+| 维度               | Claude Agent SDK   | OpenAI Agents SDK  | OpenHands            | Semantic Kernel   |
+| ------------------ | ------------------ | ------------------ | -------------------- | ----------------- |
+| **开发商**   | Anthropic          | OpenAI             | 开源社区             | Microsoft         |
+| **编程语言** | Python, TypeScript | Python, TypeScript | Python               | C#, Python, Java  |
+| **定位**     | 通用 Agent 运行时  | 通用多 Agent 编排  | AI 软件工程师        | 企业级 AI 集成    |
+| **核心模型** | Claude 系列        | GPT 系列           | 100+ 模型（LiteLLM） | Azure OpenAI 为主 |
+| **开源**     | SDK 开源           | 完全开源           | 完全开源             | 完全开源          |
+
+#### Agent Loop 对比
+
+| 维度                 | Claude Agent SDK            | OpenAI Agents SDK   | OpenHands               | Semantic Kernel      |
+| -------------------- | --------------------------- | ------------------- | ----------------------- | -------------------- |
+| **Loop 实现**  | 内置完整运行时              | Runner 驱动         | 事件溯源 + 无状态 Agent | 函数调用自动循环     |
+| **并行工具**   | 只读并行，写入串行          | 支持并行调用        | 按 Action 顺序执行      | 支持并行函数调用     |
+| **流式输出**   | StreamEvent 实时流          | Runner.run_streamed | WebSocket 事件流        | 支持流式响应         |
+| **上下文管理** | 自动 Compaction + CLAUDE.md | 手动管理            | Condenser 自动摘要      | ChatHistory 手动管理 |
+
+#### 工具/函数调用对比
+
+| 维度                 | Claude Agent SDK                     | OpenAI Agents SDK                      | OpenHands                        | Semantic Kernel        |
+| -------------------- | ------------------------------------ | -------------------------------------- | -------------------------------- | ---------------------- |
+| **内置工具**   | Read, Edit, Bash, Glob, Grep, Web 等 | WebSearch, FileSearch, CodeInterpreter | Shell, FileOps, Browser, IPython | 无内置，Plugin 定义    |
+| **自定义工具** | Python/TS 函数                       | @function_tool                         | Action-Execution-Observation     | @kernel_function       |
+| **工具权限**   | allowed/disallowed + permission_mode | 无内置权限                             | SecurityAnalyzer 风险评级        | FunctionChoiceBehavior |
+| **动态加载**   | ToolSearch 按需发现                  | 无                                     | MCP 动态集成                     | Plugin 动态注册        |
+
+#### 多 Agent 协作对比
+
+| 维度                 | Claude Agent SDK                 | OpenAI Agents SDK     | OpenHands     | Semantic Kernel        |
+| -------------------- | -------------------------------- | --------------------- | ------------- | ---------------------- |
+| **协作模式**   | Subagent（父子委派，SDK 可编程） | Handoff（对等移交）   | 单 Agent 为主 | Agent Framework 多类型 |
+| **上下文隔离** | 子 Agent 完全独立                | 共享对话历史          | N/A           | 基于 Thread            |
+| **路由方式**   | 主 Agent 决策调用                | LLM 选择 transfer_to_ | N/A           | 函数调用驱动           |
+
+#### 安全/Guardrails 对比
+
+| 维度               | Claude Agent SDK | OpenAI Agents SDK          | OpenHands           | Semantic Kernel |
+| ------------------ | ---------------- | -------------------------- | ------------------- | --------------- |
+| **输入检查** | PreToolUse Hook  | InputGuardrail + Tripwire  | SecurityAnalyzer    | 中间件 / Filter |
+| **输出检查** | PostToolUse Hook | OutputGuardrail + Tripwire | ConfirmationPolicy  | 中间件 / Filter |
+| **沙箱**     | 权限模式         | 无内置                     | Docker 容器隔离     | Azure 安全层    |
+| **凭证保护** | 无内置           | 无内置                     | SecretRegistry 脱敏 | Azure Key Vault |
+
+#### 综合评估
+
+| 维度                 | Claude Agent SDK | OpenAI Agents SDK | OpenHands | Semantic Kernel |
+| -------------------- | ---------------- | ----------------- | --------- | --------------- |
+| **生产就绪度** | ⭐⭐⭐⭐⭐       | ⭐⭐⭐⭐          | ⭐⭐⭐⭐  | ⭐⭐⭐⭐⭐      |
+| **学习曲线**   | 中等             | 低                | 高        | 中高            |
+| **灵活性**     | 高               | 高                | 非常高    | 高              |
+| **社区生态**   | 增长中           | 大                | 活跃      | 非常大（企业）  |
+
+### 4.8 框架选型指南
+
+选择 Agent 框架不是简单的"哪个最好"的问题，而是"在你的场景中，哪些取舍最合理"。以下按典型场景给出详细建议：
+
+| 场景                             | 推荐框架                         | 详细理由                                                                                                                                                                                                                         |
+| -------------------------------- | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **AI 编程助手 / 代码修复** | Claude Agent SDK / OpenHands     | Claude Agent SDK 内置 Read/Edit/Bash/Grep 等代码操作工具，Session 管理支持长时间运行的修复任务。OpenHands 提供 Docker 沙箱和 100+ 模型选择，[SWE-bench](https://www.swebench.com/) 验证度高。两者都能自动执行"搜索-修改-测试"循环。 |
+| **多 Agent 客服路由**      | OpenAI Agents SDK                | Handoff 机制天然适合"Triage → 专家"的路由模式。Guardrails 提供输入/输出检查。API 简洁，学习曲线低。结构化输出（Pydantic）适合客服场景的规范化响应。                                                                             |
+| **企业 AI 应用集成**       | Semantic Kernel / Copilot Studio | Microsoft 生态深度集成（Azure AD、M365、Graph），合规治理完善。C#/Java 支持覆盖企业主流语言。Copilot Studio 提供低代码入口，降低非技术人员的门槛。                                                                               |
+| **AI 软件工程研究**        | OpenHands                        | 事件溯源支持确定性重放，便于实验对比。多模型支持便于基准测试。Docker 沙箱提供可复现的执行环境。有 ICLR 论文背书，学术评测体系完善。                                                                                              |
+| **快速原型验证**           | OpenAI Agents SDK                | 学习曲线最低——`@function_tool` 装饰器即可定义工具，Runner.run_sync 一行执行。Tracing 自动记录调试信息。适合概念验证和快速迭代。                                                                                              |
+| **CI/CD 自动化**           | Claude Agent SDK                 | Session 管理（resume/fork）适合分步骤的自动化流程。max_budget_usd 费用控制适合无人值守场景。Hooks 系统提供审计和安全拦截。                                                                                                       |
+| **多模型策略**             | OpenHands                        | 100+ 模型支持 + RouterLLM 动态路由，可根据任务特征（多模态/纯文本/推理强度）自动选择最合适的模型，降低成本。                                                                                                                     |
+| **个人 AI 助手**           | OpenClaw                         | 通过 WhatsApp/Telegram 等日常工具交互，降低使用门槛。持久化记忆跨 session 保留上下文。自托管确保数据隐私。适合非开发者的日常任务自动化。                                                                                         |
+| **并行代码审查/调试**      | Claude Agent Teams               | 多 Agent 并行审查（安全、性能、测试覆盖），对抗性思维提高结论可靠性。共享任务列表 + 自主认领适合此类可并行化的审查工作。                                                                                                         |
+
+**通用决策流程**：
+
+```text
+你需要构建 Agent 吗？
+  → 简单 API 调用足够？ → 直接用各家 Client SDK
+  → 需要完整 Agent 运行时？
+      → 核心是代码操作 + MCP 生态？ → Claude Agent SDK
+      → 核心是多 Agent 路由？ → OpenAI Agents SDK
+      → 需要多模型 + 沙箱？ → OpenHands
+      → 需要企业治理 + Microsoft？ → Semantic Kernel
+      → 需要日常生活助手？ → OpenClaw
+```
+
+### 4.9 各家设计哲学对比
+
+| 产品/公司                   | 核心哲学                   | 关键词                    |
+| --------------------------- | -------------------------- | ------------------------- |
+| **Anthropic**         | 简单可组合模式优于复杂框架 | 简洁、透明、工具优先      |
+| **OpenAI Codex**      | 代理是系统，模型仅是组件   | 系统工程、多端协议        |
+| **OpenAI Agents SDK** | 代码优先编排，最小化原语   | 轻量、Handoff、Guardrails |
+| **OpenHands**         | 开源民主化 AI 软件工程     | 事件溯源、多模型、沙箱    |
+| **Microsoft**         | 企业级全栈代理平台         | 多层编排、企业治理        |
+| **Google**            | 开放互操作的代理生态       | A2A协议、ADK框架          |
+| **Cursor**            | 代理优先的IDE架构          | 并行子代理、后台异步      |
+| **Windsurf**          | AI-native，自动上下文      | 隐式智能、流畅体验        |
+| **OpenClaw**          | 让普通人也能拥有 AI 助手   | 多平台、持久记忆、开源    |
+
+> **Takeaway**：行业正在沿几个方向收敛——(1) 从同步到异步（Codex、Cursor Background Agent）；(2) 从框架到协议（MCP、A2A）；(3) 沙箱隔离标配化；(4) 简单优先被广泛验证；(5) MCP 正在成为 Agent 工具连接的事实标准（四大框架均已支持）。但在具体实现上，各家有截然不同的路线选择。
+
+---
+
+## 第五部分：Agent 设计最佳实践
+
+### 5.1 Anthropic 官方设计建议
+
+Anthropic 基于与数十个团队的合作经验，总结出的最佳实践是当前最成熟的Agent设计方法论。
+
+**核心哲学**："最成功的实现使用的是简单、可组合的模式，而不是复杂的框架。"
+
+**实施路径**：
+
+```
+阶段1：从简单提示词开始 → 优化单个 LLM 调用
+阶段2：全面评估 → 建立评估框架测试性能
+阶段3：按需添加复杂性 → 只在简单方案不足时升级
+```
+
+**框架使用建议**：从API直接开始（许多模式只需几行代码），如果使用框架要理解底层代码，开发时用框架、生产环境减少抽象层。
+
+### 5.2 工具设计：ACI 原则
+
+工具设计是Agent系统中投入产出比最高的环节。Anthropic 和 SWE-agent 的实践都指向同一结论：**花在优化工具上的时间应该超过优化 prompt 的时间**。
+
+**六大设计原则**：
+
+1. **格式匹配**：工具输入/输出的格式应匹配互联网上自然出现的文本格式。避免让模型处理它未见过的格式。
+2. **消除格式开销**：不要让模型做行号计数、字符串转义等无关工作。diff 格式需要预知行数（❌），JSON中的代码需转义换行符和引号（❌）。
+3. **类似代码文档**：工具描述应该像给团队成员写的高质量 docstring。包含使用示例、边界情况、格式要求、与其他工具的区别。
+4. **防错设计（Poka-yoke）**：从源头防止误用。Claude Code 的 Edit 工具是经典案例——old_string不唯一直接失败，而不是猜测。实际案例：模型在改变目录后使用相对路径出错 → 改为始终要求绝对路径 → 错误消失。
+5. **充分测试**：在 workbench 中运行多个例子，观察模型错误，迭代改进。
+6. **少即是多**：Claude Code 内置约 18 个核心工具（Read、Write、Edit、Bash、Glob、Grep、Agent 等），加上 MCP 扩展可达 30+，将多样性推到"计算机层"——Agent 通过写代码和执行来完成各种任务，而不是调用大量专门的函数。
+
+**工具命名规范**：
+
+- ✅ `search_database`（动词_名词，清晰直观）
+- ✅ `get_user_profile`
+- ❌ `tool_1`（无语义）
+- ❌ `doStuff`（模糊不清）
+
+**工具设计核心原则**：原子性（每个工具做一件事）、幂等性（相同输入产生相同结果）、清晰错误信息、合理默认值、输入验证。
+
+### 5.3 错误处理：分层与优雅降级
+
+Claude Code 的错误处理遵循"优雅降级"原则，值得推广到所有Agent系统：
+
+**分层错误处理**：
+
+```
+Layer 1: 工具层
+  → 输入验证、参数规范化、超时处理
+  → 返回结构化错误信息给 LLM
+
+Layer 2: 代理层
+  → 重试策略（指数退避）
+  → 备用工具/方法切换
+  → 错误分类和路由
+
+Layer 3: 系统层
+  → 最大重试次数限制
+  → 优雅降级（返回部分结果）
+  → 人类升级机制
+```
+
+**Claude Code 的具体实践**：
+
+- **工具执行失败**：错误信息作为工具结果返回给模型，模型自行决定如何应对（重试、换方案、报告给用户）
+- **命令风险分类**：Bash工具对命令进行风险等级分类，高风险命令需用户确认
+- **注入防护**：主动过滤反引号、`$()` 等构造，防止 prompt injection
+- **Checkpoint 机制**：每次文件编辑前快照，支持随时回滚
+- **上下文溢出**：压缩器自动触发
+
+**备降策略**（适用于所有Agent）：
+
+```
+首选工具失败
+  → 尝试替代工具（不同API/数据源）
+  → 尝试简化查询
+  → 尝试分解为更小的子任务
+  → 返回部分结果 + 说明限制
+  → 升级给人类处理
+```
+
+### 5.4 人机协作：不是可选项，而是必需品
+
+没有任何主流Agent产品敢完全去掉人工审核——检查点和审批机制是安全底线。
+
+**四种 HITL 模式**：
+
+**模式一：审批工作流** —— 代理生成方案 → 人类审批 → 执行/调整。适用于高风险操作。
+
+**模式二：置信度阈值** —— 高置信度自动执行，中置信度执行但标记需复查，低置信度暂停请求人工。
+
+**模式三：检查点机制** —— 在关键节点插入人工确认。Claude Code 的实时转向能力就是这种模式的体现。
+
+**模式四：升级机制** —— 超过重试次数、检测到异常模式、涉及敏感操作时自动升级给人类。
+
+**设计建议**：默认保守（宁可多问不要擅自行动）、渐进信任（随验证减少干预）、透明解释（每次请求干预时说明原因）、记录决策（保存所有人工决策用于改进）。
+
+### 5.5 评估与测试：Agent 的质量保证
+
+**评估维度**：
+
+| 维度       | 指标              | 说明                 |
+| ---------- | ----------------- | -------------------- |
+| 任务完成率 | 成功/总数         | 端到端完成任务的比例 |
+| 准确性     | 正确率、F1        | 输出质量和正确性     |
+| 效率       | 步骤数、token消耗 | 完成任务的资源消耗   |
+| 鲁棒性     | 错误恢复率        | 从错误中恢复的能力   |
+| 安全性     | 违规率            | 越过安全边界的频率   |
+
+**测试层级**：
+
+- **单元测试**：单个工具调用的正确性、prompt模板的输出质量
+- **集成测试**：工具链协作、多步工作流端到端、异常场景
+- **基准测试**：[SWE-bench](https://www.swebench.com/)（编码）、[WebArena](https://webarena.dev/)（网页浏览）、[GAIA](https://huggingface.co/spaces/gaia-benchmark/leaderboard)（通用AI助手）
+- **红队测试**：prompt injection攻击、边界情况探索、安全漏洞检测
+
+**评估最佳实践**：建立代表性评估数据集、自动化评估管线、多维度评分、A/B测试不同配置、生产环境持续监控。
+
+### 5.6 面向生产的关键考量
+
+**成本控制**：
+
+- 前缀缓存（最重要——Claude Code 的提示词结构专门为高缓存命中率设计）
+- 上下文管理（避免无效膨胀）
+- 渐进式加载（按需加载Skill/工具）
+- 合理使用 effort level（简单任务用low，复杂推理用high）
+- 子 Agent用更便宜的模型处理聚焦任务
+
+**安全性**：
+
+- 命令风险分类
+- 分层权限系统（组织 → 项目 → 个人）
+- 沙箱隔离（可选但推荐）
+- Prompt injection 防护
+
+**可观测性**：
+
+- 完整的工具调用日志
+- 变更审计轨迹
+- Diff-first 工作流（每次修改可视化）
+
+**可靠性**：
+
+- Checkpoint 机制（文件编辑回滚）
+- Git 集成（版本控制）
+- 优雅的错误处理（失败信息反馈给模型自行处理）
+
+> **Takeaway**：Agent 最佳实践的核心不是追求复杂技术，而是做好工程基本功——好的工具设计、稳健的错误处理、合理的人机协作、系统的评估测试。
+
+---
+
+## 总结与展望
+
+### 关键 Takeaway
+
+1. **简洁胜于复杂**：Claude Code 用单线程循环击败了许多复杂的多Agent系统。这不是巧合——简单架构带来可调试性、可靠性和推理透明度，这些在生产环境中比花哨功能更重要。
+2. **工具设计是核心竞争力**：Anthropic 和 OpenAI 的实践都表明，优化工具接口比优化 prompt 产生更大收益。ACI（Agent-Computer Interface）的设计理念——为AI专门设计交互界面——正在成为行业共识。
+3. **上下文管理是系统工程**：从前缀缓存到压缩器到子 Agent隔离到文件系统记忆，上下文管理不是单一技术而是一整套互相配合的工程体系。
+4. **Agent 是系统，模型仅是组件**：最难解决的问题几乎与AI模型本身无关。真正的工程工作投入到模型周围的一切：提示词组织、内存管理、工具设计、安全控制。
+5. **从 Workflow 到 Agent 是渐进路径**：不要一开始就构建复杂的Agent系统。从简单的LLM调用开始，建立评估框架，只在简单方案不足时逐步增加复杂性。
+
+### 趋势判断
+
+1. **从同步到异步**：主流产品都在向异步、后台执行演进（Codex、Cursor Background Agent、GitHub Coding Agent），Agent 将越来越像"后台协作者"。
+2. **从框架到协议**：MCP 和 A2A 协议代表了从封闭框架走向开放标准的趋势，跨平台Agent互操作将成为现实。MCP 已成为四大主流框架的事实标准。
+3. **受控多Agent取代自由多Agent**：从无约束的多Agent swarm 到 Claude Code 式的受控子 Agent模式，再到 Agent Teams 的任务驱动团队协作，行业正在寻找自主性和可控性之间的平衡点。
+4. **前缀缓存驱动架构设计**：prompt 结构越来越多地为缓存效率而设计，缓存命中率成为生产Agent的核心成本指标。
+5. **Skills/Plugins 生态化**：Claude Code 的 Skills 系统和各家的 Plugin 架构都指向可扩展的能力生态——Agent 的能力将像应用商店一样可以按需加载。
+6. **人机协作是安全底线**：没有产品敢完全去掉人工审核。但交互方式在进化——从粗暴的"全部审批"到精细的"风险分级 + 渐进信任"。
+7. **函数调用即规划**：从 Semantic Kernel 废弃 Planner 到所有框架采用 LLM 原生函数调用，"让 LLM 自己规划" 已成共识。
+
+### 实践建议
+
+**如果要构建一个 Agent**：
+
+- 从最简单的 while-loop + 少量精良工具开始
+- 投入大量精力在工具设计上，遵循 ACI 原则
+- 用文件系统作为外部记忆，用 CLAUDE.md/AGENTS.md 模式管理项目知识
+- 优先优化前缀缓存命中率
+- 建立评估框架，用数据驱动迭代
+
+**如果你要选择一个 Agent SDK**：
+
+- 需要代码操作 + MCP生态 + 长时间运行 → **Claude Agent SDK**
+- 需要多Agent路由 + Guardrails + 语音 → **OpenAI Agents SDK**
+- 需要多模型灵活性 + Docker沙箱 + 生产服务器 → **OpenHands**
+- 需要企业级治理 + Microsoft生态 → **Copilot Studio / Semantic Kernel**
+- 需要并行审查 + 对抗性思维 → **Claude Agent Teams**
+- 需要日常个人助手 + 多平台交互 → **OpenClaw**（项目迭代快，建议参考最新文档）
+
+**如果你要评估一个 Agent 产品**：关注它的工具设计质量、上下文管理策略、错误恢复能力和人机协作模式——这些比模型本身的能力更能决定实际体验。
+
+---
+
+> *本文档基于 Anthropic 官方文档、OpenAI 技术资料、Google ADK 文档、OpenHands 论文（ICLR 2025）、Cursor/Windsurf 技术分析、OpenClaw 社区文档、以及自适应Agent架构研究等多方材料整合而成。所有技术细节均来源于公开资料，整理日期 2026年3月。*
