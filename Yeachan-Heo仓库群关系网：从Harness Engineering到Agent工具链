@@ -1,0 +1,475 @@
+# Yeachan-Heo 仓库群关系网：从 Harness Engineering 到 Agent 工具链
+
+> **分享日期**：2026年4月1日
+>
+> **分享人**：ChatGPT × OpenCode
+> **关键词**：Harness Engineering、Codex Harness、oh-my-codex、oh-my-claudecode、oh-my-openagent、clawhip、prompthistory、tokscale
+
+---
+
+## 开篇：为什么要把这些仓库放在同一张图里看
+
+第一次看到 Yeachan-Heo 这个 GitHub 主页时，很容易产生一种感觉：仓库很多，名字也都像是同一类东西，似乎全都和 Claude Code、Codex、OpenCode、Prompt、Token 这些关键词有关。
+
+如果只是按“看过哪些仓库”的方式去读，很容易得到一串松散印象：
+
+- 这个是 Codex 的；
+- 那个是 Claude Code 的；
+- 还有一些像是提示词工具；
+- 另一些看起来像通知插件或统计工具。
+
+但如果把它们放回到 **Harness Engineering** 这条主线上，你会发现这些仓库并不是杂乱堆在一起，而是更像围绕同一套问题展开的不同层。更准确地说，这里面既有 **Yeachan-Heo 主页上的主线运行层项目**，也有 **同主页可见的相关工具、fork 或邻近生态节点**：
+
+- 有的在讲**原则**；
+- 有的在搭**运行时**；
+- 有的在补**基础设施**；
+- 有的在做**观测、回放和实验**；
+- 还有的则是跑在这些运行层之上的**下游重写项目**。
+
+所以这篇文档不想做“仓库清单”，而是想回答下面几个问题：
+
+1. **Harness Engineering、Codex Harness 和这些仓库之间，到底是什么关系？**
+   → 它们分别处在“原则层”“运行层”“工具层”“实验层”的不同位置。
+2. **Yeachan-Heo 主页所呈现的这组相关仓库，核心主线是什么？**
+   → 不是单一产品，而是一套围绕 coding agent harness 的运行时与工具链，以及若干配套的观测、历史与通知能力。
+3. **`oh-my-codex`、`oh-my-claudecode`、`oh-my-openagent` 像在哪里，不像在哪里？**
+   → 都在做编排层，但依附对象和组织化程度不同。
+4. **`clawhip`、`prompthistory`、`prompt-replay`、`tokscale` 这些仓库处在什么位置？**
+   → 它们不是主运行时，而是围绕运行时形成的配套基础设施与观测层。
+5. **`claw-code` 为什么要单独放在图里？**
+   → 因为它更像是跑在这套运行时思想之上的下游重写/迁移实验，而不是同一层的编排框架。
+
+**大纲速览**：
+
+第一部分：先把图纸展开 ─── 这批项目到底分几层  
+第二部分：原则层到运行层 ─── Harness 如何长成具体的 agent runtime  
+第三部分：运行层到工具层 ─── 为什么一个 runtime 周围会自然长出通知、回放、计量与历史工具  
+第四部分：下游实验层 ─── `claw-code` 为什么更像实验场，而不是“另一个 orchestrator”  
+第五部分：阅读顺序与常见误解 ─── 先看什么、怎么不看乱  
+总结与展望 ─────────────────── 从仓库列表，走向生态地图
+
+**推荐阅读路径**：
+
+- **只想看核心关系**：开篇 → 第二部分 → 第三部分 → 总结与展望
+- **想理解 Yeachan-Heo 仓库群**：第一部分 → 第二部分 → 第三部分 → 第五部分
+- **想看 `claw-code` 放在哪**：第二部分 §2.4 → 第四部分
+- **想按阅读顺序学习**：第五部分
+
+---
+
+## 第一部分：先把图纸展开
+
+### 1.1 不要把它看成“仓库列表”，而要看成“分层系统”
+
+如果把这些项目按最容易理解的方式重组，我会把它们拆成四层：
+
+```text
+第一层：方法论 / 原则层
+  ├─ OpenAI - Harness Engineering
+  ├─ OpenAI - Unlocking the Codex Harness
+  └─ OpenAI - Codex Prompting Guide
+
+第二层：运行时 / 编排层
+  ├─ Yeachan-Heo/oh-my-codex
+  ├─ Yeachan-Heo/oh-my-claudecode
+  └─ code-yeongyu/oh-my-openagent
+
+第三层：相关基础设施 / 观测 / 实验工具层
+  ├─ Yeachan-Heo/clawhip
+  ├─ Yeachan-Heo/prompthistory
+  ├─ Yeachan-Heo/prompt-replay
+  └─ Yeachan-Heo/tokscale
+
+第四层：下游实验 / 重写层
+  └─ instructkr/claw-code
+```
+
+这张图最重要的一点不是“它们谁更高级”，而是：
+
+> 这些项目关注的不是同一个层级的问题。
+
+有的项目在回答“Agent 系统该怎么设计”；
+有的项目在回答“具体运行时怎么搭”；
+有的项目在回答“如何补齐事件通知、历史记录、回放测试、token 计量”；
+还有的项目在回答“如何在这套运行时之上做重写和迁移实验”。
+
+如果不先分层，很容易把它们全部看成“都是 Agent 框架”，结果越看越乱。
+
+### 1.2 这张关系网真正的中心，不是某一个仓库，而是 Harness 问题本身
+
+把这些仓库放在一起后，你会发现它们围绕的共同问题其实很一致：
+
+- 模型只是大脑，运行时怎么搭？
+- 上下文怎么管？
+- 角色怎么分？
+- 历史怎么记？
+- 失败怎么回放？
+- token 怎么度量？
+- 事件怎么从终端走到团队协作工具里？
+
+这和我前面写过的那篇《Harness Engineering 与 oh-my-xx：从模型能力到编排能力》里的核心判断是一致的：
+
+**真正值得被组织起来的，不是“再多几个模型”，而是围绕模型形成一套可运行、可观测、可验证、可治理的系统。**
+
+因此，这张图的中心不是某个作者，也不是某个 CLI，而是一个更根本的问题：
+
+> 当 coding agent 不再只是“回答器”，而开始承担长任务、文件操作、工具调用和团队协作时，运行层应该如何被组织起来？
+
+---
+
+## 第二部分：从原则层到运行层
+
+### 2.1 OpenAI 这一层提供的，更多是“底座语言”和“底层问题定义”
+
+从公开资料看，OpenAI 的几篇关键材料提供的不是一个现成的多仓库生态，而是一套理解 coding agent 的底层语言。
+
+#### 第一篇：Harness Engineering
+
+它把问题从“模型有多强”推向“运行环境如何设计”。这决定了一个重要方向：
+
+- 仓库知识不是附件，而是系统的一部分；
+- `AGENTS.md`、工具配置、上下文注入、验证回路，都是 harness 的组成部分；
+- coding agent 的价值，不只是写代码，而是持续在环境约束下稳定工作。
+
+#### 第二篇：Unlocking the Codex Harness
+
+这篇更像在解释 Codex 这一套表面能力背后，其实共享着一个更深的 harness。它会让你更容易理解：
+
+为什么会有人去做 `oh-my-codex` 这种“在 Codex CLI 之上再搭一层 workflow / team runtime”的项目。
+
+#### 第三篇：Codex Prompting Guide
+
+它把工作方法往前推进一步：不仅仅是“怎么让模型回答”，而是“如何组织仓库知识、任务意图和工具行为，让 Codex 更稳定”。
+
+所以如果只用一句话概括 OpenAI 这一层的作用，我会说：
+
+**它给后面的仓库群提供了问题定义、术语和方法论底座。**
+
+### 2.2 `oh-my-codex`：把 Codex 从一个 CLI，变成一个更有组织的运行层
+
+从 README 的公开表述看，`oh-my-codex` 并不是替代 Codex，而是给 Codex CLI 增加一层更强的 workflow / orchestration 结构。
+
+也就是说，它处理的不是“模型推理能力”，而是：
+
+- 角色如何分工；
+- 任务如何路由；
+- 团队式工作流如何落到 `.omx/` 状态和运行结构里；
+- Codex 这一层如何被组织成一个更稳定的 harness。
+
+因此它和 OpenAI 原始材料的关系更像：
+
+> OpenAI 提供 Codex Harness 的原则语言，`oh-my-codex` 把这些原则进一步具体化成一个可用的运行层。
+
+这也是为什么在公开文档里，`oh-my-codex` 更像 runtime layer，而不是单一的 prompt collection。
+
+### 2.3 `oh-my-claudecode`：它不是 `oh-my-codex` 的复制品，而是同一思路在 Claude Code 一侧的兄弟项目
+
+如果说 `oh-my-codex` 是 Codex 侧的运行层，那么 `oh-my-claudecode` 更像 Claude Code 侧的对应项目。
+
+两者的共同点是：
+
+- 都不是底层模型；
+- 都不是在重写整个基础模型能力；
+- 都试图在现有 coding agent 之上，加上一层更强的运行时组织方式。
+
+但两者也不能简单看成一模一样。因为它们所依附的“宿主”不同：
+
+- 一个依附 Codex CLI；
+- 一个依附 Claude Code。
+
+所以更准确的说法不是“谁抄谁”，而是：
+
+**它们像是同一个思路在不同 agent 宿主之上的两条实现分支。**
+
+### 2.4 `oh-my-openagent`：它和前两者同属编排层，但更像“OpenCode / OpenAgent 侧的组织化系统”
+
+`oh-my-openagent`（以及它的历史命名脉络，如 `oh-my-opencode`）和 `oh-my-codex`、`oh-my-claudecode` 一样，也明显属于编排层。
+
+但从公开说明来看，它更强调：
+
+- 分类路由；
+- 专职代理；
+- 后台并行；
+- 更强的 discipline；
+- 明显更“组织化”的工作流。
+
+所以如果要把这三者放在一条线上看：
+
+- **`oh-my-codex`**：Codex CLI 之上的 workflow/runtime 强化层；
+- **`oh-my-claudecode`**：Claude Code 之上的 sibling runtime layer；
+- **`oh-my-openagent`**：更偏 OpenCode / OpenAgent 一侧的组织化编排系统。
+
+它们都在回答“如何把宿主 agent 组织得更好”，但各自依附的生态和强调点不完全相同。
+
+### 2.5 `claw-code` 为什么放在运行层外面
+
+`claw-code` 很容易被误看成“又一个 orchestrator”。
+
+但从目前可见材料看，它更像：
+
+- 一个 clean-room rewrite / porting 项目；
+- 一个围绕 Claude Code harness 的重写实验；
+- 一个由 `oh-my-codex` 这类运行层编排出来的下游工程样本。
+
+这点很关键。
+
+因为一旦这样理解，你就不会再把它和 `oh-my-codex`、`oh-my-claudecode`、`oh-my-openagent` 放在同一层比较。
+
+更准确的关系是：
+
+> `claw-code` 更像跑在这些编排思想之上的实验场，而不是负责组织这些思想本身的运行层。
+
+这也是它在这张关系图里被放到“第四层：下游实验 / 重写层”的原因。
+
+---
+
+## 第三部分：为什么运行层周围会自然长出一圈工具
+
+### 3.1 一个 runtime 一旦进入真实使用，就不会只剩 runtime 本身
+
+很多人第一次看这些仓库时，会觉得奇怪：
+
+- 为什么除了 `oh-my-codex` / `oh-my-claudecode` 这些运行层，还有 `clawhip`、`prompthistory`、`prompt-replay`、`tokscale` 这种“侧边工具”？
+
+答案其实很简单。
+
+因为当 agent runtime 真正被拿去跑长任务、多人协作、提示调优和成本控制时，系统自然会分化出几类配套能力：
+
+- 事件通知；
+- 历史记录；
+- prompt 回放；
+- token / cost 计量；
+- 横跨多客户端的观测面。
+
+这些东西平时不显眼，但恰恰决定了一套 agent runtime 是“玩具”还是“能长期用”。
+
+### 3.2 `clawhip`：它像事件路由和团队通知层，而不是主运行时
+
+`clawhip` 的定位非常有代表性。
+
+它不直接解决“Agent 怎么规划”，而更像在解决：
+
+- session / agent 事件如何被拿出来；
+- 如何把这些事件推送到 Discord、Slack 之类的团队通道；
+- 怎样让外部团队知道 agent 在做什么，同时减少直接把噪声塞回原上下文的风险。
+
+因此，`clawhip` 在这张图里最适合放在：
+
+**运行时之外、协作基础设施之内。**
+
+它依附 runtime，但不等于 runtime。
+
+### 3.3 `prompthistory`：它更像跨客户端的历史层
+
+从公开说明看，`prompthistory` 明显不是某一个单一代理的私有工具，而是更接近“跨客户端 prompt 历史层”。
+
+这意味着它关心的是：
+
+- 历史输入输出的统一查看；
+- 不同 agent / client 的历史聚合；
+- 为调试、观察和后续分析提供材料。
+
+一旦有了这层能力，运行时就不再只是“当下发生什么”，而会多出一个“历史可回看”的维度。
+
+所以它在这张图里属于：
+
+**观测与历史基础设施层。**
+
+### 3.4 `prompt-replay`：它和 `prompthistory` 很近，但更偏实验与回归切片
+
+`prompt-replay` 很容易和 `prompthistory` 混在一起。
+
+两者当然很近，因为都围绕 prompt 运行痕迹展开。但就公开材料的充分程度而言，`prompt-replay` 的信息明显比 `prompthistory` 更薄，所以这里的判断也需要更保守一些。我会把它们再细分一下：
+
+- **`prompthistory`** 更像“历史层 / 记录层”；
+- **`prompt-replay`** 更像“回放层 / 实验层 / 对比层”。
+
+也就是说，一个更偏“把东西留下来”，另一个更偏“把留下来的东西拿来复现、比较和验证”。
+
+这也是为什么 `prompt-replay` 更像观测体系中的实验切片，而不是单独的 runtime。
+
+### 3.5 `tokscale`：统一的 token / cost 计量面
+
+`tokscale` 的位置也很清楚。
+
+它解决的不是谁来做任务，而是：
+
+- 一次任务到底消耗了多少 token；
+- 跨不同 agent / client 如何统一对齐成本感知；
+- 如何把“模型很强”翻译成“代价多少”。
+
+这类工具的重要性经常被低估，但只要系统开始跨 Claude Code、Codex、OpenCode、Gemini 或 Cursor 之类多个客户端流动，你就会马上意识到：
+
+> 没有统一计量面，你几乎不可能做真正的 FinOps，也很难形成靠谱的工程判断。
+
+所以 `tokscale` 不是边角料，而是：
+
+**多 runtime 生态下的共享计量层。**
+
+---
+
+## 第四部分：把这些关系线压缩成一张真正能用的图
+
+### 4.1 最值得记住的 8 条关系线
+
+如果把上面的长篇内容压缩成最值得记住的 8 条关系，我会这样总结：
+
+1. **OpenAI 的 Harness Engineering 是方法论底座，不是下游仓库之一。**
+2. **OpenAI 的 Codex Harness 相关材料解释了为什么 `oh-my-codex` 这种“在 Codex CLI 之上再加一层 runtime”的项目会成立。**
+3. **`oh-my-codex` 是 Codex 侧的 workflow / orchestration layer。**
+4. **`oh-my-claudecode` 是 Claude Code 侧的 sibling runtime layer。**
+5. **`oh-my-openagent` 和前两者同属编排层，但更偏 OpenCode / OpenAgent 一侧的组织化系统。**
+6. **`clawhip` 是事件与团队通知基础设施，不是主运行时。**
+7. **`prompthistory`、`prompt-replay`、`tokscale` 共同落在历史、回放、观测和计量这条工具线上，但其中有些更像主页可见的相关生态工具，而不必强写成同一主编排栈的核心内核。**
+8. **`claw-code` 更像被这些运行时思想和工具链“托举起来”的下游实验 / 重写项目，而不是同一层的 orchestrator。**
+
+### 4.2 文字版关系网
+
+```text
+OpenAI Harness / Codex 材料
+        │
+        ├── 定义问题：harness、repo knowledge、AGENTS.md、runtime discipline
+        │
+        ▼
+编排层 / 运行层
+        ├── oh-my-codex        （Codex 侧 runtime layer）
+        ├── oh-my-claudecode   （Claude Code 侧 sibling layer）
+        └── oh-my-openagent    （OpenCode/OpenAgent 侧组织化编排层）
+                │
+                ├── 需要事件外送 / 团队协作  → clawhip
+                ├── 需要历史沉淀 / 追踪      → prompthistory
+                ├── 需要复现 / 对比 / 回归   → prompt-replay
+                └── 需要 token / cost 计量   → tokscale
+
+下游实验层
+        └── claw-code （更像重写 / 迁移 / clean-room 实验工程）
+```
+
+### 4.3 最容易误解的三个地方
+
+#### 误解一：把所有仓库都看成“Agent 框架”
+
+这是最常见的误解。
+
+实际上：
+
+- 有的是原则；
+- 有的是编排层；
+- 有的是基础设施；
+- 有的是实验工程。
+
+混在一起看，就会误判它们的目标。
+
+#### 误解二：把 `claw-code` 看成 `oh-my-codex` 的同类竞品
+
+从可见材料看，这个理解并不准确。
+
+更合理的看法是：
+
+`claw-code` 是被某一套 harness/runtime 思想编排出来的下游重写项目，而不是与之同层竞争的 orchestration 平台。
+
+#### 误解三：把工具层当成“附属小玩意”，或者反过来把它们都误写成“主线内核”
+
+很多人会天然重视 runtime，不重视 `clawhip`、`prompthistory`、`prompt-replay`、`tokscale`；也有人会反过来，把这些横向工具一股脑写成“同一主线框架的一部分”。
+
+但真正做过长任务、团队协作和多模型成本控制的人会知道：
+
+**更稳妥的写法是：这些工具层不是装饰，而是让 runtime 变得可观测、可复现、可协作、可治理的关键部分；但它们与主编排层的关系，应优先按公开 README 的自我定位来写，而不是按想象补完。**
+
+---
+
+## 第五部分：如果你要读，最好的顺序是什么
+
+### 5.1 想看原则，先读 OpenAI 这条线
+
+如果你还没有建立“为什么需要 harness”这个底层视角，最好的入口不是先读一堆 GitHub 仓库，而是先读：
+
+1. Harness Engineering
+2. Unlocking the Codex Harness
+3. Codex Prompting Guide
+
+先把问题定义看明白，再去看运行层仓库，理解会快很多。
+
+### 5.2 想看运行时，优先读 `oh-my-codex` / `oh-my-claudecode` / `oh-my-openagent`
+
+这三者最适合拿来理解：
+
+- harness 怎么落成 runtime；
+- 不同宿主上如何加一层编排；
+- 为什么 coding agent 的真实价值越来越像“组织能力”。
+
+### 5.3 想看生态补全，接着读 `clawhip`、`prompthistory`、`prompt-replay`、`tokscale`
+
+这一圈最适合理解的是：
+
+- 一个运行层一旦长期使用，会需要哪些配套能力；
+- 为什么通知、历史、回放、token 计量会自然长出来；
+- 真正能用的 agent 系统，为什么一定不是“只有一个 CLI”。
+
+### 5.4 想看下游工程实验，再读 `claw-code`
+
+当你先理解了上面三层，再去看 `claw-code`，你就不容易误判它。
+
+你会更自然地把它看成：
+
+- 一种下游实现；
+- 一个 clean-room rewrite / porting 的样本；
+- 一个被运行时和方法论托举起来的实验工程。
+
+---
+
+## 总结与展望：从仓库列表，走向生态地图
+
+如果只看名字，这批仓库会显得有点散；但如果按 Harness Engineering 这条主线去重排，它们其实构成了一张非常清晰的生态图：
+
+- **OpenAI** 提供问题定义与方法论底座；
+- **oh-my-codex / oh-my-claudecode / oh-my-openagent** 提供运行层与编排层；
+- **clawhip / prompthistory / prompt-replay / tokscale** 提供通知、历史、回放、观测与计量；
+- **claw-code** 则更像跑在这些思想与运行层之上的实验样本。
+
+所以这张关系图最有价值的地方，不是告诉你“该崇拜哪个仓库”，而是帮你看清一件更重要的事：
+
+> 一个成熟的 coding agent 生态，不会只停留在模型或 CLI 本身，它一定会往外长出运行时、通知层、历史层、回放层和计量层。
+
+换句话说，真正值得研究的，不是某一个 repo 本身，而是：
+
+**这些 repo 如何共同回答了同一个问题——怎样把 agent 从一个会说话的工具，组织成一个可运行、可观测、可验证、可持续演化的系统。**
+
+这也是为什么，把这批仓库画成关系网，会比单独看每个 README 更有用。
+
+---
+
+## 参考资料
+
+1. OpenAI, *Harness Engineering*  
+   https://openai.com/index/harness-engineering/
+
+2. OpenAI, *Unlocking the Codex Harness*  
+   https://openai.com/index/unlocking-the-codex-harness/
+
+3. OpenAI Cookbook, *Codex Prompting Guide*  
+   https://developers.openai.com/cookbook/examples/gpt-5/codex_prompting_guide
+
+4. Yeachan-Heo, *oh-my-codex*  
+   https://github.com/Yeachan-Heo/oh-my-codex
+
+5. Yeachan-Heo, *oh-my-claudecode*  
+   https://github.com/Yeachan-Heo/oh-my-claudecode
+
+6. code-yeongyu, *oh-my-openagent*  
+   https://github.com/code-yeongyu/oh-my-openagent
+
+7. Yeachan-Heo, *clawhip*  
+   https://github.com/Yeachan-Heo/clawhip
+
+8. Yeachan-Heo, *prompthistory*  
+   https://github.com/Yeachan-Heo/prompthistory
+
+9. Yeachan-Heo, *prompt-replay*  
+   https://github.com/Yeachan-Heo/prompt-replay
+
+10. Yeachan-Heo, *tokscale*  
+    https://github.com/Yeachan-Heo/tokscale
+
+11. instructkr, *claw-code*  
+    https://github.com/instructkr/claw-code
